@@ -1,0 +1,18 @@
+[project]
+name = "mtg-fci-query"
+version = "0.1.0"
+description = "Package to download data from MTG FCI"
+authors = [
+    {name = "Riccardo D'Ercole"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "xarray (>=2025.7.1,<2026.0.0)",
+    "rasterio (>=1.4.3,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
