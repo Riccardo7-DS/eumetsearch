@@ -6,10 +6,19 @@ authors = [
     {name = "Riccardo D'Ercole"}
 ]
 readme = "README.md"
+
+packages = [
+    { include = "utils", from = "src" }
+]
+
+package-mode = false
+
 requires-python = ">=3.13"
 dependencies = [
     "xarray (>=2025.7.1,<2026.0.0)",
-    "rasterio (>=1.4.3,<2.0.0)"
+    "rasterio (>=1.4.3,<2.0.0)",
+    "eumdac (>=3.0.0,<4.0.0)",
+    "python-dotenv (>=1.1.1,<2.0.0)"
 ]
 
 
