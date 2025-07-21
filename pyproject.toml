@@ -1,26 +1,22 @@
-[project]
+[tool.poetry]
 name = "mtg-fci-query"
 version = "0.1.0"
 description = "Package to download data from MTG FCI"
-authors = [
-    {name = "Riccardo D'Ercole"}
-]
+authors = ["Riccardo D'Ercole"]
 readme = "README.md"
 
 packages = [
     { include = "utils", from = "src" }
 ]
 
-package-mode = false
 
-requires-python = ">=3.13"
-dependencies = [
-    "xarray (>=2025.7.1,<2026.0.0)",
-    "rasterio (>=1.4.3,<2.0.0)",
-    "eumdac (>=3.0.0,<4.0.0)",
-    "python-dotenv (>=1.1.1,<2.0.0)"
-]
-
+[tool.poetry.dependencies]
+python = ">=3.13"
+xarray = ">=2025.7.1,<2026.0.0"
+rasterio = ">=1.4.3,<2.0.0"
+eumdac = ">=3.0.0,<4.0.0"
+python-dotenv = ">=1.1.1,<2.0.0"
+tqdm = "^4.67.1"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -1,7 +1,8 @@
 import eumdac
 import datetime
 import subprocess
-from datetime import timedelta, datetime
+from datetime import timedelta
+from datetime import datetime
 import time
 import fnmatch
 import eumdac
@@ -9,6 +10,7 @@ from typing import Literal
 import os
 from dotenv import load_dotenv
 import shutil
+from tqdm.auto import tqdm
 import logging
 logger = logging.getLogger(__name__)
 
@@ -28,17 +30,24 @@ products_list = {
 class EUMDownloader:
     """Downloader for MTG products."""
 
-    def __init__(self, product_id:str, 
+    def __init__(self, 
+                 product_id:str, 
+                 output_dir:str,
                  format:Literal["netcdf","geotiff"]='netcdf',
                  sleep_time:int=10):
 
         consumer_key = os.getenv("EUMETSAT_CONSUMER_KEY")
         consumer_secret = os.getenv("EUMETSAT_CONSUMER_SECRET")
 
+        self.output_dir = output_dir
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
         self.datastore = self.initialize_downloader(
             consumer_key,
             consumer_secret
         )
+        
         sleep_time = sleep_time # seconds
         
         self.token = token = eumdac.AccessToken((consumer_key, consumer_secret))
@@ -50,13 +59,10 @@ class EUMDownloader:
             raise ValueError("Format must be either 'netcdf' or 'geotiff'.")
         self.format = format
 
-        if product_id not in products_list:
-            raise ValueError(f"Product ID {product_id} is not recognized. Available products: {list(products_list.keys())}")
-        
-        self.roi = "africa"
         self.product_id = product_id
-        self.product_name = products_list[product_id]["product_name"]
-        self.channels = products_list[product_id]["bands"]
+        produc_fake_name = [k for k, v in products_list.items() if v["product_id"] == product_id][0]
+        self.product_name = products_list[produc_fake_name]["product_name"]
+        self.channels = products_list[produc_fake_name]["bands"]
 
     def split_time_into_daily_observations(self, 
                                        start_date, 
@@ -103,8 +109,8 @@ class EUMDownloader:
 
     def datatailor_download(self, 
                 start_time,
-                end_time, 
-                output_dir, 
+                end_time,
+                roi=None,
                 observations_per_day=1, 
                 start_hour=12, 
                 interval_hours=1):
@@ -116,29 +122,25 @@ class EUMDownloader:
         selected_collection = self.datastore.get_collection(self.product_id)
 
         # Set sensing start and end time
-        start = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%S")
-        end = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S")
+        start = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%SZ")
+        end = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%SZ")
         if start >= end:
             raise ValueError("Start time must be before end time.")
         
-        # Ensure start and end times are in UTC
-        start_time = start.astimezone(datetime.timezone.utc)
-        end_time = end.astimezone(datetime.timezone.utc)
+        # # Ensure start and end times are in UTC
+        # start_time = start.astimezone(datetime.timezone.utc)
+        # end_time = end.astimezone(datetime.timezone.utc)
 
-        if start_time.tzinfo is None or end_time.tzinfo is None:
-            raise ValueError("Start and end times must be timezone-aware datetime objects.")
+        # if start_time.tzinfo is None or end_time.tzinfo is None:
+        #     raise ValueError("Start and end times must be timezone-aware datetime objects.")
 
         #Ensure start_time and end_time are in the correct format
-        if not isinstance(start_time, datetime.datetime) or not isinstance(end_time, datetime.datetime):
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
             raise ValueError("Start and end times must be datetime objects.")
 
-        # Create output directory if it doesn't exist
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
         intervals = self.split_time_into_daily_observations(
-            start_date=start_time.date(),
-            end_date=end_time.date(),
+            start_date=start,
+            end_date=end,
             observations_per_day=observations_per_day,
             start_hour=start_hour,
             interval_hours=interval_hours
@@ -150,34 +152,31 @@ class EUMDownloader:
             format=self.format,
             filter={"bands" : self.channels},
             projection='geographic',
-            roi='western_europe'
         )
         
         #loop over intervals and run the chain for each interval
-
-        for interval in intervals:
+        for interval in tqdm(intervals):
             start, end = interval
 
             # Retrieve latest product that matches the filter
             products = selected_collection.search(
                 dtstart=start,
                 dtend=end).first()
-            
-            logger.debug(f'Found Datasets: {products.total_results} datasets for the given time range')
-            for product in products:
-            	logger.debug(str(product))
+            if products.total_results > 1:
+                logger.debug(f'Found Multiple Datasets: {products.total_results} for the given time range')
 
-            # Send the customisation to Data Tailor Web Services
             customisation = self.datatailor.new_customisation(products, chain=chain)
-        
-            input = str(product) + ".zip"
-            output = str(product)
+            self._download_customisation(customisation, self.output_dir)
 
-            if not os.path.exists(output):
-                os.makedirs(output)
 
-            for start, end in intervals:
-                subprocess.run(["epct", "run-chain", "-f", chain_config, "--sensing-start", start, "--sensing-stop", end, input, "-o", output])
+    def _download_multiprocessing(self, chain_config, intervals, product):
+        """Run the chain configuration for each interval in parallel."""
+        input = str(product) + ".zip"
+        output = str(product)
+        if not os.path.exists(output):
+            os.makedirs(output)
+        for start, end in intervals:
+            subprocess.run(["epct", "run-chain", "-f", chain_config, "--sensing-start", start, "--sensing-stop", end, input, "-o", output])
 
 
     def initialize_downloader(self, consumer_key, consumer_secret):
@@ -191,7 +190,7 @@ class EUMDownloader:
         logger.info("Downloader initialized.")
         return datastore
     
-    def _download_customisation(self, customisation, sleep_time=10):
+    def _download_customisation(self, customisation, dest_path, sleep_time=10):
         """Polls the status of a customisation and downloads the output once completed."""
         while True:
             status = customisation.status
@@ -226,6 +225,14 @@ class EUMDownloader:
                 logger.info(f"Customisation {customisation._id} is running.")
 
             time.sleep(sleep_time)
+
+            # Download the customised product
+            logger.info("Starting download of customised products...")
+            for product in customisation.outputs:
+                logger.info(f"Downloading product: {product}")
+                with customisation.stream_output(product) as source_file, open(os.path.join(dest_path, source_file.name), 'wb') as destination_file:
+                    shutil.copyfileobj(source_file, destination_file)
+                logger.info(f"Product {product} downloaded successfully.")
     
     def download_product(self, selected_collection, product):
         selected_product = self.datastore.get_product(
