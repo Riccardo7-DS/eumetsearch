@@ -70,14 +70,15 @@ class EUMDownloader:
         self.format = format
 
         self.get_token()
-        self.__data_store = self.initialize_datastore(self._token)
-        self.__data_tailor = self.initialize_datatailor(self._token)
-        self.__selected_collection = self.__data_store.get_collection(product_id)
+        self._data_store = self.initialize_datastore(self._token)
+        self._data_tailor = self.initialize_datatailor(self._token)
+        self._selected_collection = self._data_store.get_collection(product_id)
     
         product_key = [k for k, v in products_list.items() if v["product_id"] == product_id][0]
         self.product_name = products_list[product_key]["product_name"]
         self.product_id = product_id
         self.channels = products_list[product_key]["bands"]
+
 
     @staticmethod
     def len(product_ids: SearchResults) -> int:
@@ -198,11 +199,11 @@ class EUMDownloader:
     
         return thread_chunks
     
-    def parallel_download(self, time_intervals: list[tuple[datetime, datetime]], bounding_box):
-        chunks = self._split_intervals_for_threading(time_intervals, self.max_parallel_conns)
+    def chunks_download(self, file_list, bounding_box):
+        chunks = self._split_intervals_for_threading(self.intervals, self.max_parallel_conns)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_parallel_conns) as executor:
-            futures = [executor.submit(self._download_products, chunk, self.__selected_collection, self.output_dir, bounding_box)
+            futures = [executor.submit(self._download_products, chunk, self._selected_collection, self.output_dir, bounding_box)
                        for chunk in chunks]
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -213,9 +214,9 @@ class EUMDownloader:
 
     def download_interval(self, 
                           start_time, 
-                          end_time, roi:str=None, 
+                          end_time, 
                           bounding_box:list=None, 
-                          method:Literal["datatailor", "datastore"]="datatailor",
+                          method:Literal[None, "datatailor", "datastore"]=None,
                           observations_per_day=1, 
                           start_hour=12, 
                           interval_minutes=10,
@@ -235,7 +236,7 @@ class EUMDownloader:
 
         assert_start_precedes_end(start, end)
 
-        intervals = self._split_time_into_daily_observations(
+        self.intervals = self._split_time_into_daily_observations(
             start_date=start,
             end_date=end,
             observations_per_day=observations_per_day,
@@ -244,15 +245,19 @@ class EUMDownloader:
             jump_minutes=jump_minutes
         )
 
+        self.start_date = start_time
+        self.end_date = end_time
+        self.file_list = self._collect_products(self.intervals, bounding_box)
+
         if method == "datatailor":
             self._datatailor_download(
-                intervals,
+                self.file_list,
                 bounding_box=bounding_box,
             )
 
         elif method == "datastore":
-            self.parallel_download(
-                intervals, 
+            self.chunks_download(
+                self.file_list, 
                 bounding_box
             )
             
@@ -292,10 +297,8 @@ class EUMDownloader:
                 pass  # tqdm updates for each completed thread
 
     def _datatailor_download(self,
-                    intervals, 
-                    bounding_box=None):
-        
-        """Download products using the DataTailor service."""
+                             file_list,
+                             bounding_box):
         
         from eumdac.tailor_models import Chain
 
@@ -307,26 +310,40 @@ class EUMDownloader:
             filter={"bands" : self.channels},
             projection='geographic',
         )
+
+        [self._download_customisation(product, chain, self.output_dir) for product in file_list]
+            
+
+
+    def _collect_products(self,
+                    intervals, 
+                    bounding_box=None):
         
+        """Download products using the DataTailor service."""
+        
+
+        file_list = []
+
         #loop over intervals and run the chain for each interval
-        for interval in tqdm(intervals):
+        for interval in tqdm(intervals, desc="Collecting products specs..."):
             start, end = interval
 
             # Retrieve latest product that matches the filter
-            selected_products = self.__selected_collection.search(
+            selected_products = self._selected_collection.search(
                 dtstart=start,
                 dtend=end,
                 bbox=bounding_box)
             
+            file_list.extend(selected_products)
+            
             if selected_products.total_results > 1:
                 logger.debug(f'Found Multiple Datasets: {selected_products.total_results} for the given time range') 
             
-            [self._download_customisation(product, chain, self.output_dir) for product in selected_products]
-            
+        return file_list
 
     
     def _download_customisation(self, product, chain, dest_path):
-        customisation = self.__data_tailor.new_customisation(product, chain=chain)
+        customisation = self._data_tailor.new_customisation(product, chain=chain)
         """Polls the status of a customisation and downloads the output once completed."""
         while True:
             status = customisation.status
@@ -378,43 +395,95 @@ class EUMDownloader:
             subprocess.run(["epct", "run-chain", "-f", chain_config, "--sensing-start", start, "--sensing-stop", end, input, "-o", output])
 
 
-class MTGVisData(EUMDownloader):
-    def __init__(self, day, size:list = [5568,5568], channels:list= ['vis_06',  'vis_08',  'vis_09']):
+class MTGDataParallel(EUMDownloader):
+    def __init__(self,  
+                downloader: EUMDownloader, 
+                size:list = [11136,11136], 
+                channels:list= ['vis_06',  'vis_08'],
+                processes:PositiveInt=4,
+                chunks: dict = {"time": 1, "y": 500, "x": 500}
+                ):
         super(EUMDownloader).__init__()
 
-        self.file_list = [f for f in os.listdir(self.output_dir)]
-        self.channels = channels
-        self.day = day
+        self.file_list = downloader.file_list
+        self.output_dir = downloader.output_dir
         self.size = size
-        self.zip_path = Path(self.output_dir) / "zipfile"
-        os.makedirs(self.zip_path, exist_ok=True, parents=True)
-        self.nat_path = Path(self.output_dir) / "natfolder"
-        os.makedirs(self.nat_path, exist_ok=True, parents=True)
-        
+        self.processes = processes
+        self.chunks = chunks
 
-    def netcdf_zarr_pipeline(self):
-        file_list = sorted(self.file_list, key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1]))
+        channelsIR = ['ir_105', 'ir_123',  'ir_133',  'ir_38',  'ir_87',  'ir_97',  'wv_63',  'wv_73']    
+        channelsVIS= ['nir_13', 'nir_16',  'nir_22',  'vis_04',  'vis_05', 'vis_06',  'vis_08',  'vis_09', ]
+        
+        assert all(f in channelsIR or f in channelsVIS for f in channels), \
+           "One or more channels are not in channelsIR or channelsVIS"
+        logger.info("The initialized class contains {} files".format(len(self.file_list)))
+        self.channels = channels
+        self.size = size
+        self.zip_path = Path(self.output_dir) / "zipfolder"
+        os.makedirs(self.zip_path, exist_ok=True)
+        self.nat_path = Path(self.output_dir) / "natfolder"
+        os.makedirs(self.nat_path, exist_ok=True)
+
+        self.download_to_zarr(self.file_list)
+
+
+    def download_to_zarr(self, file_list):
+        from utils import ZarrStore
+        t0= time.time()
+        file_list = sorted(self.file_list, 
+            key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1]))
+        
+        store = ZarrStore(self.output_dir, 
+                          size=self.size, 
+                          file_list=self.file_list,
+                          channels=self.channels)
+        
+        self._remove_all_tempfiles()
         download_queue = queue.Queue()
-        read_pbar = tqdm(total=len(file_list), desc="Reading files ", position=1, leave=True)
+        read_pbar = tqdm(total=len(self.file_list), desc="Reading files ", position=1, leave=True)
         # Start reader thread
-        reader_thread = threading.Thread(target=self.reader, args=(download_queue, read_pbar))
+        reader_thread = threading.Thread(target=self.read_convert_append, args=(download_queue, read_pbar, store.path))
         reader_thread.start()
-        download_pbar = tqdm(total=len(file_list), desc="Downloading files", position=0, leave=True)
+        download_pbar = tqdm(total=len(self.file_list), desc="Downloading files", position=0, leave=True)
+        
         # Use ThreadPoolExecutor to download files in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = [executor.submit(self.download_file, file_list[t], t, download_queue) for t in range(len(file_list))]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.processes) as executor:
+            futures = [executor.submit(self._download_file, self.file_list[t], t, download_queue) for t in range(len(file_list))]
             for _ in as_completed(futures):
                 download_pbar.update(1)
 
-    def download_file(self, product, t, download_queue):
-        #global download_queue
-        filename = self.eum_download_file(product, self.zip_path)
-        download_queue.put( (filename,t,product))
+        for _ in range(self.processes):
+            download_queue.put((None, None, None, None))
+            
+        reader_thread.join()
+        self._remove_all_tempfiles()
 
-    def eum_download_file(self, product, dest_folder):
+        elapsed_seconds = time.time() - t0
+        hours = int(elapsed_seconds // 3600)
+        minutes = int((elapsed_seconds % 3600) // 60)
+        logger.info(f"Done in {hours} hours {minutes} minutes") 
+
+    def _remove_all_tempfiles(self):
+        import os
+        for filename in os.listdir(self.nat_path):
+           file_path = os.path.join(self.nat_path, filename)
+           if os.path.isfile(file_path):
+              os.remove(file_path)
+        for filename in os.listdir(self.zip_path):
+           file_path = os.path.join(self.zip_path, filename)
+           if os.path.isfile(file_path):
+              os.remove(file_path)
+        return
+
+    def _download_file(self, product, t, download_queue):
+        #global download_queue
+        filename = self._download_zipfile(product, self.zip_path)
+        download_queue.put((filename, t, product))
+
+    def _download_zipfile(self, product, dest_folder):
         dsnm=product.metadata["properties"]["title"]
         dssz=product.metadata["properties"]["productInformation"]["size"]
-        outfilename = os.path.join(dest_folder, dsnm)+'.zip'
+        outfilename = os.path.join(dest_folder, dsnm) +'.zip'
 
         if os.path.isfile(outfilename):
             szdsk=os.path.getsize(outfilename)
@@ -425,43 +494,42 @@ class MTGVisData(EUMDownloader):
             shutil.copyfileobj(fsrc, fdst)
         return os.path.join(dest_folder, fsrc.name)
     
-    def read_zarrDask_fast(self, natfolder, t):
+    def _read_satpy_convert(self, natfolder, t, resample:bool=False):
         from satpy.scene import Scene
         from satpy import find_files_and_readers
         from satpy import _scene_converters as convert
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  
 
-        calibration ='brightness_temperature'
-    
+        calibration ='radiance'
         tt0=time.time()
         path_to_data = natfolder
         fill_value = -32768
     
         # find files and assign the FCI reader
         files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
-    
+
         # create an FCI scene from the selected files
         tt1=time.time()
         scn = Scene(filenames=files)
         tt2=time.time()
-        # note : https://satpy.readthedocs.io/en/latest/_modules/satpy/readers/fci_l1c_nc.html#FCIL1cNCFileHandler.calibrate_rad_to_bt
-        #https://satpy.readthedocs.io/en/latest/api/satpy.readers.fci_l1c_nc.html   
         
         out={}
         
         scn.load(self.channels, upper_right_corner='NE',calibration=calibration)
+        if resample:
+            scn = scn.resample('mtg_fci_fdss_1km')
         tt3=time.time()
         xscene = convert.to_xarray(scn)
         fill_value=-32768.0
         for channel in self.channels:
-            image = xscene[channel] 
-            data = image.data * 10
+            data = xscene[channel] 
+            # data = image.data * 10
             data = da.where(da.isnan(data), fill_value, data)
             data = da.where(da.isinf(data), fill_value, data)  # or 32767.0 / -32768.0 if preferred
     
-            data = da.clip(data, -32768, 32767)
-            data = data.astype('int16')
+            # data = da.clip(data, -32768, 32767)
+            data = data.astype('float32')
             data = da.expand_dims(data, axis=0) 
             data_array = xr.DataArray(
                 data,
@@ -469,17 +537,18 @@ class MTGVisData(EUMDownloader):
                 name=channel)
             out[channel] = data_array
         tt4=time.time()    
-        ds = xr.Dataset(out)
-        ds= ds.persist()
+        ds = xr.Dataset(out).chunk(self.chunks)
+        if not resample:
+            ds= ds.persist()
 
-        return t,ds
+        return t, ds
 
     def str2unixTime(self, stime):
         return np.datetime64(stime)
 
-    def reader(self, download_queue, read_pbar):
+    def read_convert_append(self, download_queue, read_pbar, zarr_path):
         while True:
-            filename, t, product, set0 = download_queue.get()
+            filename, t, product = download_queue.get()[:3]
             if filename is None:  # Sentinel to stop thread
                 break
 
@@ -492,7 +561,7 @@ class MTGVisData(EUMDownloader):
                         zf.extract(fnat, natfolder_t)
 
             # Read dataset
-            t, ds = self.read_zarrDask_fast(natfolder_t, t)
+            t, ds = self._read_satpy_convert(natfolder_t, t)
             identifier = product._browse_properties['identifier']
             date_range = product._browse_properties['date']
 
@@ -502,14 +571,9 @@ class MTGVisData(EUMDownloader):
             t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
 
             ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
-            ds['unixTimeStart'] = xr.DataArray(t_start, dims=('time',), coords={'time': [0]})
-            ds['unixTimeEnd'] = xr.DataArray(t_end, dims=('time',), coords={'time': [0]})
+            ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
+            ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
             ds = ds.assign_coords(time=[t])
-
-            # Write to Zarr
-            from utils import ZarrStore
-            zarr_store = ZarrStore(self.output_dir , self.size)
-            zarr_path , encoding = zarr_store.zarr_store_create(self.day, labl='VIS', num_files=len(self.file_list), varnms=self.channels, size=self.size) 
 
             ds.to_zarr(
                 zarr_path,
@@ -517,12 +581,12 @@ class MTGVisData(EUMDownloader):
                 compute=True
             )
 
-            # Clean up extracted files
-            for fname in os.listdir(natfolder_t):
-                file_path = os.path.join(natfolder_t, fname)
-                if os.path.isfile(file_path):
-                    os.remove(file_path)
-            os.rmdir(natfolder_t)
+            # # Clean up extracted files
+            # for fname in os.listdir(natfolder_t):
+            #     file_path = os.path.join(natfolder_t, fname)
+            #     if os.path.isfile(file_path):
+            #         os.remove(file_path)
+            # os.rmdir(natfolder_t)
 
             read_pbar.update(1)
             download_queue.task_done()

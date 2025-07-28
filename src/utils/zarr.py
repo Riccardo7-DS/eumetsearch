@@ -3,25 +3,43 @@ import queue
 import dask.array as da
 import xarray as xr
 import os
+from pydantic import PositiveInt
 
-class ZarrStore():
-    def __init__(self, folder_path, size, n_workersd=4):
-
+class ZarrStore:
+    def __init__(self, 
+                 folder_path, 
+                 size:list,
+                 file_list:list,
+                 channels:list, 
+                 chunks: dict = {"time": 1, "y": 500, "x": 500}, 
+                 n_workers:PositiveInt=4):
+        
         self.folder_path = folder_path
-        self.size = size
-        self.n_workersd = n_workersd
-    
-    def zarr_store_create(self, day, label, channels):
-        zarr_path = os.path.join(
-        self.folder_path, f'MTG_FCI{day[0:4]}{day[5:7]}{day[8:10]}{label}.zarr'
-    )
-        #store = zarr.DirectoryStore(zarr_path)
-        # Dimensions
-        num_time = self.num_files
-        cnks = 140
-        height, width = self.size
+        self._num_timesteps = len(file_list)
+        self._size = size  # (height, width)
+        self._chunks = chunks
+        self._num_timechunks = chunks.get("time", 1)
+        self._num_ychunks = chunks.get("y", 500)
+        self._num_xchunks = chunks.get("x", 500)
+        self._n_workers = n_workers
 
-        # Dummy time coordinate (optional but often required)
+        zarr_path , encoding = self.zarr_store_create(
+            label='VIS', 
+            channels=channels, 
+            size=size
+        )
+
+        self.path = zarr_path
+
+    def zarr_store_create(self, label, channels, size):
+        zarr_path = os.path.join(
+            self.folder_path,
+            f'MTG_FCI_{label}.zarr'
+        )
+
+        # Dimensions
+        num_time = self._num_timesteps  
+        height, width = size
         time_coord = list(range(num_time))
 
         all_vars = {
@@ -31,37 +49,33 @@ class ZarrStore():
             "wv_63", "wv_73"
         }
 
-        assert all(v in all_vars for v in channels), "One or more channels are invalid"
-
-        # Metadata variables always included
         meta_vars = ["identifier", "unixTimeStart", "unixTimeEnd"]
 
-        # Filter to only requested channels
+        assert all(v in all_vars for v in channels), "One or more channels are invalid"
         selected_vars = set(channels)
         selected_vars.update(meta_vars)
 
-        # Build data_vars and encoding dicts
         data_vars = {}
         encoding = {}
-        compressor = zarr.Blosc(cname="zstd", clevel=9, shuffle=zarr.Blosc.SHUFFLE)
+        compressor = zarr.Blosc(cname="zstd", clevel=4)
 
         for var in selected_vars:
             if var in meta_vars:
                 shape = (num_time,)
-                chunks = (1,)
-                dtype = 'S143' if var == "identifier" else 'float64'
+                chunks = (self._num_timechunks,)
+                dtype = 'S143' if var == "identifier" else "datetime64[ns]"
                 dims = ("time",)
             else:
                 shape = (num_time, height, width)
-                chunks = (1, cnks, width)
-                dtype = 'int16'
+                chunks = (self._num_timechunks, self._num_ychunks, self._num_xchunks)
+                dtype = 'float32' if var.startswith("vis_") else 'int32'
                 dims = ("time", "y", "x")
 
             data_vars[var] = (dims, da.empty(shape, dtype=dtype, chunks=chunks))
-            encoding[var] = {"compressor": compressor, "chunks": chunks}
-
-        # Create and write dataset
+            encoding[var] = {"compressor": compressor, 
+                             "chunks": chunks}
+    
         ds_empty = xr.Dataset(data_vars=data_vars, coords={"time": time_coord})
-        ds_empty.to_zarr(zarr_path, mode='w', encoding=encoding, compute=True)
+        ds_empty.to_zarr(zarr_path, mode='w', compute=True)
 
         return zarr_path, encoding
