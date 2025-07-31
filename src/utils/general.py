@@ -20,43 +20,53 @@ def bbox_mtg():
     return [-18.105469,-37.857507,60.820313,71.413177]
 
 
-def reproject_mtg_grid(data, resolution_deg = 0.01):
+def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
     from pyresample import geometry, kd_tree
     # Approximate 1 km resolution in degrees (at equator)
     # ~1.1 km at equator
-    bbox = bbox_mtg()
-    # Unpack
-    lon_min, lat_min, lon_max, lat_max = bbox
+    if full_grid:
+        lat_min = -90
+        lat_max = 90
+        lon_min = -180
+        lon_max = 180
+    else:
+        # Unpack
+        bbox = bbox_mtg()
+        lon_min, lat_min, lon_max, lat_max = bbox
 
-    # Create coordinate vectors
-    lats = np.arange(lat_min, lat_max + resolution_deg, resolution_deg)
-    lons = np.arange(lon_min, lon_max + resolution_deg, resolution_deg)
+    height = int((lat_max - lat_min) / resolution_deg) 
+    width = int((lon_max - lon_min) / resolution_deg)
+
+    lats = np.linspace(lat_max, lat_min, height)  # Flip to ensure north-to-south order
+    lons = np.linspace(lon_min, lon_max, width)
 
     # Create 2D lat/lon grid
     lon2d, lat2d = np.meshgrid(lons, lats)
 
-    # Wrap into xarray Dataset (optional)
-    grid_ds = xr.Dataset(
-        coords={
-            "lat": ("lat", lats),
-            "lon": ("lon", lons)
-        }
-    )
+    return lats, lons, lon2d, lat2d
 
-    logger.info("Grid dimensions: ", lat2d.shape)
-    logger.info("Lat range: ", lats.min(), "to", lats.max())
-    logger.info("Lon range: ", lons.min(), "to", lons.max())
+    # # Wrap into xarray Dataset (optional)
+    # grid_ds = xr.Dataset(
+    #     coords={
+    #         "lat": ("lat", lats),
+    #         "lon": ("lon", lons)
+    #     }
+    # )
 
-    # Define source geometry (satellite scan)
-    source_swath = geometry.SwathDefinition(lons=lons, lats=lats)
+    # logger.info("Grid dimensions: ", lat2d.shape)
+    # logger.info("Lat range: ", lats.min(), "to", lats.max())
+    # logger.info("Lon range: ", lons.min(), "to", lons.max())
 
-    # Define target grid (regular lat/lon grid)
-    target_grid = geometry.GridDefinition(lons=lon2d, lats=lat2d)
+    # # Define source geometry (satellite scan)
+    # source_swath = geometry.SwathDefinition(lons=lons, lats=lats)
 
-    # Resample radiance to lat/lon grid
-    result = kd_tree.resample_nearest(source_swath, data, target_grid,
-                                       radius_of_influence=50000, fill_value=None)
-    return result
+    # # Define target grid (regular lat/lon grid)
+    # target_grid = geometry.GridDefinition(lons=lon2d, lats=lat2d)
+
+    # # Resample radiance to lat/lon grid
+    # result = kd_tree.resample_nearest(source_swath, data, target_grid,
+    #                                    radius_of_influence=50000, fill_value=None)
+    # return result
 
 
 def unzip_files(destination_folder, filename):

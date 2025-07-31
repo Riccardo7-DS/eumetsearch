@@ -24,6 +24,13 @@ import numpy as np
 import threading
 import xarray as xr
 import dask.array as da
+import pandas as pd
+from dask.diagnostics import ProgressBar
+from pyresample.geometry import AreaDefinition
+from typing import Union
+from pyresample.utils import proj4_str_to_dict
+
+tb = ProgressBar().register()
 
 
 logger = logging.getLogger(__name__)
@@ -313,8 +320,6 @@ class EUMDownloader:
 
         [self._download_customisation(product, chain, self.output_dir) for product in file_list]
             
-
-
     def _collect_products(self,
                     intervals, 
                     bounding_box=None):
@@ -395,19 +400,19 @@ class EUMDownloader:
             subprocess.run(["epct", "run-chain", "-f", chain_config, "--sensing-start", start, "--sensing-stop", end, input, "-o", output])
 
 
-class MTGDataParallel(EUMDownloader):
+class MTGDataParallel():
     def __init__(self,  
                 downloader: EUMDownloader, 
-                size:list = [11136,11136], 
                 channels:list= ['vis_06',  'vis_08'],
+                reprojection:Union[None, str]=None,
                 processes:PositiveInt=4,
-                chunks: dict = {"time": 1, "y": 500, "x": 500}
+                chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
                 ):
-        super(EUMDownloader).__init__()
 
         self.file_list = downloader.file_list
         self.output_dir = downloader.output_dir
-        self.size = size
+        self.size = self._get_size(reprojection)
+        self._reproject = reprojection
         self.processes = processes
         self.chunks = chunks
 
@@ -418,13 +423,18 @@ class MTGDataParallel(EUMDownloader):
            "One or more channels are not in channelsIR or channelsVIS"
         logger.info("The initialized class contains {} files".format(len(self.file_list)))
         self.channels = channels
-        self.size = size
         self.zip_path = Path(self.output_dir) / "zipfolder"
         os.makedirs(self.zip_path, exist_ok=True)
         self.nat_path = Path(self.output_dir) / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
         self.download_to_zarr(self.file_list)
+
+    def _get_size(self, reprojection):
+        if reprojection == "worldeqc3km":
+            return [2048, 4096] 
+        else:
+            return [11136,11136] 
 
 
     def download_to_zarr(self, file_list):
@@ -494,57 +504,90 @@ class MTGDataParallel(EUMDownloader):
             shutil.copyfileobj(fsrc, fdst)
         return os.path.join(dest_folder, fsrc.name)
     
-    def _read_satpy_convert(self, natfolder, t, resample:bool=False):
+
+    def _get_coords_area(self):
+            """Create an AreaDefinition for the dataset."""
+            lons, lats = self._area_def.get_lonlats()
+            return lons, lats
+    
+    def _read_satpy_convert(self, natfolder, t):
         from satpy.scene import Scene
         from satpy import find_files_and_readers
         from satpy import _scene_converters as convert
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  
 
-        calibration ='radiance'
-        tt0=time.time()
+        calibration ='reflectance'
         path_to_data = natfolder
         fill_value = -32768
     
         # find files and assign the FCI reader
         files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
-
         # create an FCI scene from the selected files
-        tt1=time.time()
-        scn = Scene(filenames=files)
-        tt2=time.time()
-        
+        scn = Scene(filenames=files)       
+        scn.load(self.channels, calibration=calibration)
+
+        if self._reproject:
+            logger.info(f"Reprojecting data to {self._reproject} coordinates...")
+            scn_resampled = scn.resample(self._reproject)            
+        else:
+            scn_resampled = scn
+
+        xscene = convert.to_xarray(scn_resampled)
+        example = xscene[self.channels[0]]
+        lats = example.coords['latitude'].values
+        lons = example.coords['longitude'].values
+        self._area_def =scn_resampled[self.channels[0]].attrs["area"]
+                
         out={}
-        
-        scn.load(self.channels, upper_right_corner='NE',calibration=calibration)
-        if resample:
-            scn = scn.resample('mtg_fci_fdss_1km')
-        tt3=time.time()
-        xscene = convert.to_xarray(scn)
+
         fill_value=-32768.0
         for channel in self.channels:
-            data = xscene[channel] 
-            # data = image.data * 10
-            data = da.where(da.isnan(data), fill_value, data)
-            data = da.where(da.isinf(data), fill_value, data)  # or 32767.0 / -32768.0 if preferred
-    
-            # data = da.clip(data, -32768, 32767)
+            # _ = scn_resampled[channel].values # to trigger the loading of the data
+            data = xscene[channel]
+            data = data.expand_dims(dim={'time': [t]})
+            data = data.where(~xr.ufuncs.isnan(data), fill_value)
+            data = data.where(~xr.ufuncs.isinf(data), fill_value)
+            data = data.clip(min=-32768, max=32767)
             data = data.astype('float32')
-            data = da.expand_dims(data, axis=0) 
+            
             data_array = xr.DataArray(
-                data,
-                dims=('time', 'y', 'x'),
-                name=channel)
+                data.drop_vars(["x","y"]).rename({"y":"lat", "x":"lon"}),
+                dims=('time', 'lat', 'lon'),
+                name=channel,
+                attrs=data.attrs
+            )
+
             out[channel] = data_array
-        tt4=time.time()    
+
+        # Build dataset and rename dims to lat/lon
         ds = xr.Dataset(out).chunk(self.chunks)
-        if not resample:
+        ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
+
+        # Assign lat/lon as 2D coordinates
+        ds = ds.assign_coords(
+            time=[pd.Timestamp(t)],
+            lat=(('lat', 'lon'), lats),
+            lon=(('lat', 'lon'), lons)
+        )
+        ds = self._clean_metadata(ds)
+
+        if self._reproject is not None:
             ds= ds.persist()
+        else:
+            ds = ds.compute()
 
         return t, ds
 
     def str2unixTime(self, stime):
         return np.datetime64(stime)
+    
+    def _clean_metadata(self, ds):
+        # Clean up metadata
+        ds.attrs = {}
+        for var in ds.data_vars:
+            ds[var].attrs = {}
+        return ds
 
     def read_convert_append(self, download_queue, read_pbar, zarr_path):
         while True:
@@ -573,20 +616,13 @@ class MTGDataParallel(EUMDownloader):
             ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
             ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
             ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
-            ds = ds.assign_coords(time=[t])
+            ds = ds.assign_coords(time=[pd.Timestamp(t)])
 
-            ds.to_zarr(
+            ds.drop_vars(["lat", "lon"]).to_zarr(
                 zarr_path,
                 region={"time": slice(t, t + 1)},
                 compute=True
             )
-
-            # # Clean up extracted files
-            # for fname in os.listdir(natfolder_t):
-            #     file_path = os.path.join(natfolder_t, fname)
-            #     if os.path.isfile(file_path):
-            #         os.remove(file_path)
-            # os.rmdir(natfolder_t)
 
             read_pbar.update(1)
             download_queue.task_done()

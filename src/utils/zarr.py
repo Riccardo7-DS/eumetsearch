@@ -4,6 +4,10 @@ import dask.array as da
 import xarray as xr
 import os
 from pydantic import PositiveInt
+import logging
+import shutil
+
+logger = logging.getLogger(__name__)
 
 class ZarrStore:
     def __init__(self, 
@@ -11,7 +15,7 @@ class ZarrStore:
                  size:list,
                  file_list:list,
                  channels:list, 
-                 chunks: dict = {"time": 1, "y": 500, "x": 500}, 
+                 chunks: dict = {"time": 1, "lat": 2048, "lon": 2048}, 
                  n_workers:PositiveInt=4):
         
         self.folder_path = folder_path
@@ -19,8 +23,8 @@ class ZarrStore:
         self._size = size  # (height, width)
         self._chunks = chunks
         self._num_timechunks = chunks.get("time", 1)
-        self._num_ychunks = chunks.get("y", 500)
-        self._num_xchunks = chunks.get("x", 500)
+        self._num_ychunks = chunks.get("lat", 2048)
+        self._num_xchunks = chunks.get("lon", 4096)
         self._n_workers = n_workers
 
         zarr_path , encoding = self.zarr_store_create(
@@ -32,10 +36,35 @@ class ZarrStore:
         self.path = zarr_path
 
     def zarr_store_create(self, label, channels, size):
+        def on_rm_error(func, path, exc_info):
+            import stat
+
+            # Change the file to be writable and try again
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+
         zarr_path = os.path.join(
             self.folder_path,
             f'MTG_FCI_{label}.zarr'
         )
+
+        if os.path.exists(zarr_path):
+            response = input(f"The folder '{zarr_path.split("/")[-1]}' already exists. Do you want to delete it? (yes/no): ").strip().lower()
+            if response == 'yes':
+                try:
+                    shutil.rmtree(zarr_path, onexc=on_rm_error)
+                    logger.info(f"Deleted existing folder: {zarr_path}")
+                except Exception as e:
+                    logger.error(f"Error deleting folder {zarr_path}: {e}")
+                    raise FileExistsError(
+                        f"Could not delete folder '{zarr_path.split('/')[-1]}'. Please delete it manually or choose a different folder."
+                    )
+            else:
+                raise FileExistsError(
+                    f"Folder '{zarr_path.split('/')[-1]}' already exists. Please choose a different folder or delete the existing one."
+                )
+            
+                
 
         # Dimensions
         num_time = self._num_timesteps  
@@ -69,7 +98,7 @@ class ZarrStore:
                 shape = (num_time, height, width)
                 chunks = (self._num_timechunks, self._num_ychunks, self._num_xchunks)
                 dtype = 'float32' if var.startswith("vis_") else 'int32'
-                dims = ("time", "y", "x")
+                dims = ("time", "lat", "lon")
 
             data_vars[var] = (dims, da.empty(shape, dtype=dtype, chunks=chunks))
             encoding[var] = {"compressor": compressor, 
