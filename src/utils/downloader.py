@@ -404,7 +404,7 @@ class MTGDataParallel():
     def __init__(self,  
                 downloader: EUMDownloader, 
                 channels:list= ['vis_06',  'vis_08'],
-                reprojection:Union[None, str]=None,
+                area_reprojection:Union[None, str]=None,
                 processes:PositiveInt=4,
                 chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
                 ):
@@ -413,8 +413,8 @@ class MTGDataParallel():
 
         self.file_list = downloader.file_list
         self.output_dir = downloader.output_dir
-        self.size = self._get_size(reprojection)
-        self._reproject = reprojection
+        self.size = self._get_size(area_reprojection)
+        self._reproject = area_reprojection
         self.processes = processes
         input_shape = {"time": chunks["time"], "lat": self.size[0], "lon":self.size[1]}
         self.chunks = compute_auto_chunks(shape= input_shape)
@@ -433,13 +433,15 @@ class MTGDataParallel():
 
         self.download_to_zarr(self.file_list)
 
-    def _get_size(self, reprojection):
-        if reprojection == "worldeqc3km":
+    def _get_size(self, area_reprojection:str):
+        if area_reprojection == "worldeqc3km":
             return [2048, 4096]
-        elif reprojection == "EPSG_4326_36000x18000":
+        elif area_reprojection == "EPSG_4326_36000x18000":
             return [18000, 36000] 
-        elif reprojection == "msg_seviri_fes_1km":
-            return [11136,11136] 
+        elif area_reprojection == "msg_seviri_fes_1km":
+            return [11136, 11136]
+        else: 
+            raise NotImplementedError("Area {} not implemented".format(area_reprojection))
 
 
     def download_to_zarr(self, file_list):

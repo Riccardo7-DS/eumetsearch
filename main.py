@@ -31,4 +31,4 @@ downloader.download_interval(
     jump_minutes=60
 )
 
-MTGDataParallel(downloader, reprojection="EPSG_4326_36000x18000")
+MTGDataParallel(downloader, area_reprojection="EPSG_4326_36000x18000")
