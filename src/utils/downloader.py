@@ -408,13 +408,16 @@ class MTGDataParallel():
                 processes:PositiveInt=4,
                 chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
                 ):
+        
+        from utils import compute_auto_chunks
 
         self.file_list = downloader.file_list
         self.output_dir = downloader.output_dir
         self.size = self._get_size(reprojection)
         self._reproject = reprojection
         self.processes = processes
-        self.chunks = chunks
+        input_shape = {"time": chunks["time"], "lat": self.size[0], "lon":self.size[1]}
+        self.chunks = compute_auto_chunks(shape= input_shape)
 
         channelsIR = ['ir_105', 'ir_123',  'ir_133',  'ir_38',  'ir_87',  'ir_97',  'wv_63',  'wv_73']    
         channelsVIS= ['nir_13', 'nir_16',  'nir_22',  'vis_04',  'vis_05', 'vis_06',  'vis_08',  'vis_09', ]
@@ -432,8 +435,10 @@ class MTGDataParallel():
 
     def _get_size(self, reprojection):
         if reprojection == "worldeqc3km":
-            return [2048, 4096] 
-        else:
+            return [2048, 4096]
+        elif reprojection == "EPSG_4326_36000x18000":
+            return [18000, 36000] 
+        elif reprojection == "msg_seviri_fes_1km":
             return [11136,11136] 
 
 
@@ -446,7 +451,8 @@ class MTGDataParallel():
         store = ZarrStore(self.output_dir, 
                           size=self.size, 
                           file_list=self.file_list,
-                          channels=self.channels)
+                          channels=self.channels,
+                          chunks= self.chunks)
         
         self._remove_all_tempfiles()
         download_queue = queue.Queue()
@@ -525,11 +531,11 @@ class MTGDataParallel():
         files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
         # create an FCI scene from the selected files
         scn = Scene(filenames=files)       
-        scn.load(self.channels, calibration=calibration)
+        scn.load(self.channels, calibration=calibration, upper_right_corner='NE')
 
         if self._reproject:
             logger.info(f"Reprojecting data to {self._reproject} coordinates...")
-            scn_resampled = scn.resample(self._reproject)            
+            scn_resampled = scn.resample(area=self._reproject)            
         else:
             scn_resampled = scn
 
@@ -566,7 +572,7 @@ class MTGDataParallel():
 
         # Assign lat/lon as 2D coordinates
         ds = ds.assign_coords(
-            time=[pd.Timestamp(t)],
+            time=[scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]],
             lat=(('lat', 'lon'), lats),
             lon=(('lat', 'lon'), lons)
         )
@@ -582,11 +588,19 @@ class MTGDataParallel():
     def str2unixTime(self, stime):
         return np.datetime64(stime)
     
-    def _clean_metadata(self, ds):
-        # Clean up metadata
-        ds.attrs = {}
-        for var in ds.data_vars:
-            ds[var].attrs = {}
+    def _clean_metadata(self, ds, all:bool = False):
+        if all:
+            # Clean up metadata
+            ds.attrs = {}
+            for var in ds.data_vars:
+                ds[var].attrs = {}
+        else:
+            for a in ["FillValue", "_FillValue"]:
+                for var in ds.data_vars:
+                    if a in ds[var].attrs:
+                        del ds[var].attrs[a]
+
+            
         return ds
 
     def read_convert_append(self, download_queue, read_pbar, zarr_path):
@@ -616,7 +630,7 @@ class MTGDataParallel():
             ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
             ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
             ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
-            ds = ds.assign_coords(time=[pd.Timestamp(t)])
+            # ds = ds.assign_coords(time=[pd.Timestamp(t)])
 
             ds.drop_vars(["lat", "lon"]).to_zarr(
                 zarr_path,
