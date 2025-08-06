@@ -19,6 +19,34 @@ logger = logging.getLogger(__name__)
 def bbox_mtg():
     return [-18.105469,-37.857507,60.820313,71.413177]
 
+def extract_custom_area(area_name:str, file:str):
+    from pyresample import create_area_def
+    import yaml 
+
+    """
+    Extracts the custom area definition from the configuration.
+    """
+    config_area = yaml.safe_load(open(file, "r"))
+    if area_name not in config_area:
+        raise ValueError(f"Area '{area_name}' not found in configuration.") 
+    
+    area_dict = config_area[area_name]
+    if not isinstance(area_dict, dict):
+        raise ValueError(f"Area '{area_name}' is not a valid dictionary in configuration.")
+    
+    return create_area_def(area_id=area_name,
+        description=area_dict['description'],
+        proj_id='latlon',
+        projection=area_dict['projection'],
+        width=area_dict['shape']['width'],
+        height=area_dict['shape']['height'],
+        area_extent=(
+            area_dict['area_extent']['lower_left_xy'][0],
+            area_dict['area_extent']['lower_left_xy'][1],
+            area_dict['area_extent']['upper_right_xy'][0],
+            area_dict['area_extent']['upper_right_xy'][1])
+        )
+
 
 def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
     from pyresample import geometry, kd_tree

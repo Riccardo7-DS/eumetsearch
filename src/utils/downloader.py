@@ -444,12 +444,10 @@ class MTGDataParallel():
             return [4096, 8192]
         elif area_reprojection == "worldeqc1km70":
             return [15585, 40075]
+        elif area_reprojection == "mtg_fci_latlon_1km":
+            return [14000, 14000]
         elif area_reprojection == "EPSG_4326_36000x18000":
-            return [18000, 36000] 
-        elif area_reprojection == "msg_seviri_fes_1km":
-            return [11136, 11136]
-        elif area_reprojection == "EPSG_4326_1km":
-            return [15585, 40075]
+            return [18000, 36000]
         else: 
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
 
@@ -558,9 +556,8 @@ class MTGDataParallel():
         from satpy.scene import Scene
         from satpy import find_files_and_readers
         from satpy import _scene_converters as convert
-        from satpy.area import get_area_def
-
-        
+        from utils import extract_custom_area
+                
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  
 
@@ -575,7 +572,7 @@ class MTGDataParallel():
         scn.load(self.channels, calibration=calibration)
 
         if self._reproject:
-            self._area_def = get_area_def(self._reproject)
+            self._area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
             logger.info(f"Reprojecting data to {self._reproject} coordinates...")
             scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=50000, resampler="nearest")            
         else:
@@ -583,8 +580,8 @@ class MTGDataParallel():
 
         xscene = convert.to_xarray(scn_resampled)
         example = xscene[self.channels[0]]
-        lats = example.coords['latitude'].values
-        lons = example.coords['longitude'].values
+        # lats = example.coords['latitude'].values
+        # lons = example.coords['longitude'].values
 
         # self._area_def =scn_resampled[self.channels[0]].attrs["area"]
         # xscene.to_netcdf("./example_file.nc")     

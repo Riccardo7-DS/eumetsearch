@@ -38,4 +38,4 @@ downloader.download_interval(
     jump_minutes=60
 )
 
-MTGDataParallel(args, downloader, area_reprojection="EPSG_4326_36000x18000")
+MTGDataParallel(args, downloader, area_reprojection="mtg_fci_latlon_1km")
