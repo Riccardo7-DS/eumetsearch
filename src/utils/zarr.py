@@ -16,8 +16,10 @@ class ZarrStore:
                  size:list,
                  file_list:list,
                  channels:list, 
+                 ds:xr.Dataset=None,
                  chunks: dict = {"time": 1, "lat": "auto", "lon": "auto"}, 
-                 n_workers:PositiveInt=4):
+                 n_workers:PositiveInt=4,
+                 yes_flag:bool=False):
         
         self.folder_path = folder_path
         self._num_timesteps = len(file_list)
@@ -31,16 +33,16 @@ class ZarrStore:
         zarr_path , encoding = self.zarr_store_create(
             label='VIS', 
             channels=channels, 
-            size=size
+            size=size,
+            ds_example=ds,
+            yes_flag=yes_flag
         )
 
         self.path = zarr_path
 
-    def zarr_store_create(self, label, channels, size):
+    def zarr_store_create(self, label, channels, size, ds_example=None, yes_flag=False):
         def on_rm_error(func, path, exc_info):
             import stat
-
-            # Change the file to be writable and try again
             os.chmod(path, stat.S_IWRITE)
             func(path)
 
@@ -50,7 +52,13 @@ class ZarrStore:
         )
 
         if os.path.exists(zarr_path):
-            response = input(f"The folder '{zarr_path.split("/")[-1]}' already exists. Do you want to delete it? (yes/no): ").strip().lower()
+            if yes_flag:
+                response = 'yes'
+            else:
+                response = input(
+                    f"The folder '{zarr_path.split('/')[-1]}' already exists. Do you want to delete it? (yes/no): "
+                ).strip().lower()
+
             if response == 'yes':
                 try:
                     shutil.rmtree(zarr_path, onexc=on_rm_error)
@@ -64,7 +72,6 @@ class ZarrStore:
                 raise FileExistsError(
                     f"Folder '{zarr_path.split('/')[-1]}' already exists. Please choose a different folder or delete the existing one."
                 )
-            
                 
 
         # Dimensions
@@ -106,6 +113,14 @@ class ZarrStore:
                              "chunks": chunks}
     
         ds_empty = xr.Dataset(data_vars=data_vars, coords={"time": time_coord})
+        if ds_example is not None:
+            merged_attrs = ds_example.attrs.copy()
+            merged_attrs.update(ds_example[channels[1]].attrs)
+            ds_empty = ds_empty.assign_attrs(merged_attrs)
+            to_del = ["time_parameters", "ancillary_variables", "end_time", "start_time"]
+            for attr in to_del:
+                ds_empty.attrs.pop(attr, None)
+
         ds_empty.to_zarr(zarr_path, mode='w', compute=True)
 
         return zarr_path, encoding

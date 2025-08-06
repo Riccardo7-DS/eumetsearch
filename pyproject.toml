@@ -24,6 +24,7 @@ pydantic = "^2.11.7"
 satpy = "^0.57.0"
 zarr = "2.18.7"
 ipykernel = "^6.30.0"
+h5netcdf = "^1.6.3"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

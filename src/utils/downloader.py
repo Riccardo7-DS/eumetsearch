@@ -401,13 +401,17 @@ class EUMDownloader:
 
 
 class MTGDataParallel():
-    def __init__(self,  
+    def __init__(self,
+                args:dict,  
                 downloader: EUMDownloader, 
                 channels:list= ['vis_06',  'vis_08'],
                 area_reprojection:Union[None, str]=None,
                 processes:PositiveInt=4,
+                initialize_dataset:bool=False,
                 chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
                 ):
+        
+        
         
         from utils import compute_auto_chunks
 
@@ -431,30 +435,59 @@ class MTGDataParallel():
         self.nat_path = Path(self.output_dir) / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
-        self.download_to_zarr(self.file_list)
+        self.download_to_zarr(args, self.file_list, initialize_dataset)
 
     def _get_size(self, area_reprojection:str):
         if area_reprojection == "worldeqc3km":
             return [2048, 4096]
+        elif area_reprojection == "worldeqc3km70":
+            return [4096, 8192]
+        elif area_reprojection == "worldeqc1km70":
+            return [15585, 40075]
         elif area_reprojection == "EPSG_4326_36000x18000":
             return [18000, 36000] 
         elif area_reprojection == "msg_seviri_fes_1km":
             return [11136, 11136]
+        elif area_reprojection == "EPSG_4326_1km":
+            return [15585, 40075]
         else: 
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
 
 
-    def download_to_zarr(self, file_list):
+    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool):
         from utils import ZarrStore
         t0= time.time()
         file_list = sorted(self.file_list, 
             key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1]))
         
+        if initialize_dataset:
+            t = 0
+            filename = self._download_file(product=self.file_list[t], t=t)
+            example_ds = self.read_convert_append(filename=filename, t=t)
+
+            example_ds = example_ds.assign_attrs(
+                chunks = self.chunks,
+                origin_size = self.size)
+
+            example_ds.attrs['area_definition'] = {
+                'area_id': self._area_def.area_id,
+                'description': self._area_def.description,
+                'proj_id': self._area_def.proj_id,
+                'projection': self._area_def.proj_dict,
+                'width': self._area_def.width,
+                'height': self._area_def.height,
+                'area_extent': self._area_def.area_extent,
+            }
+        else:
+            example_ds = None
+
         store = ZarrStore(self.output_dir, 
                           size=self.size, 
                           file_list=self.file_list,
                           channels=self.channels,
-                          chunks= self.chunks)
+                          chunks= self.chunks,
+                          ds= example_ds,
+                          yes_flag=args.yes)
         
         self._remove_all_tempfiles()
         download_queue = queue.Queue()
@@ -493,10 +526,13 @@ class MTGDataParallel():
               os.remove(file_path)
         return
 
-    def _download_file(self, product, t, download_queue):
+    def _download_file(self, product, t, download_queue= None):
         #global download_queue
         filename = self._download_zipfile(product, self.zip_path)
-        download_queue.put((filename, t, product))
+        if download_queue is not None:
+            download_queue.put((filename, t, product))
+        else:
+            return filename
 
     def _download_zipfile(self, product, dest_folder):
         dsnm=product.metadata["properties"]["title"]
@@ -506,7 +542,7 @@ class MTGDataParallel():
         if os.path.isfile(outfilename):
             szdsk=os.path.getsize(outfilename)
             if szdsk/1000 > dssz:
-                return
+                return outfilename
         with product.open() as fsrc, \
                 open(os.path.join(dest_folder, fsrc.name), mode='wb') as fdst:
             shutil.copyfileobj(fsrc, fdst)
@@ -518,10 +554,13 @@ class MTGDataParallel():
             lons, lats = self._area_def.get_lonlats()
             return lons, lats
     
-    def _read_satpy_convert(self, natfolder, t):
+    def _read_satpy_convert(self, natfolder, t=None):
         from satpy.scene import Scene
         from satpy import find_files_and_readers
         from satpy import _scene_converters as convert
+        from satpy.area import get_area_def
+
+        
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")  
 
@@ -533,11 +572,12 @@ class MTGDataParallel():
         files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
         # create an FCI scene from the selected files
         scn = Scene(filenames=files)       
-        scn.load(self.channels, calibration=calibration, upper_right_corner='NE')
+        scn.load(self.channels, calibration=calibration)
 
         if self._reproject:
+            self._area_def = get_area_def(self._reproject)
             logger.info(f"Reprojecting data to {self._reproject} coordinates...")
-            scn_resampled = scn.resample(area=self._reproject)            
+            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=50000, resampler="nearest")            
         else:
             scn_resampled = scn
 
@@ -545,8 +585,9 @@ class MTGDataParallel():
         example = xscene[self.channels[0]]
         lats = example.coords['latitude'].values
         lons = example.coords['longitude'].values
-        self._area_def =scn_resampled[self.channels[0]].attrs["area"]
-                
+
+        # self._area_def =scn_resampled[self.channels[0]].attrs["area"]
+        # xscene.to_netcdf("./example_file.nc")     
         out={}
 
         fill_value=-32768.0
@@ -574,10 +615,10 @@ class MTGDataParallel():
 
         # Assign lat/lon as 2D coordinates
         ds = ds.assign_coords(
-            time=[scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]],
-            lat=(('lat', 'lon'), lats),
-            lon=(('lat', 'lon'), lons)
-        )
+            time=[scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]])
+            # lat=(('lat', 'lon'), lats),
+            # lon=(('lat', 'lon'), lons)
+        # )
         ds = self._clean_metadata(ds)
 
         if self._reproject is not None:
@@ -604,41 +645,93 @@ class MTGDataParallel():
 
             
         return ds
+    
+    def read_convert_append(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None,  t=None):
+        if download_queue is None:
+            if filename is None:
+                raise ValueError("Filename must be provided when not using a download queue.")
+            if t is None:
+                raise ValueError("Time index 't' must be provided when not using a download queue.")
+            product = self.file_list[t]
+            ds = self._process_single_file(filename, t, product)
+            return ds
 
-    def read_convert_append(self, download_queue, read_pbar, zarr_path):
+        # Queue-based threaded processing
         while True:
-            filename, t, product = download_queue.get()[:3]
-            if filename is None:  # Sentinel to stop thread
+            item = download_queue.get()
+            if item[0] is None:  # Sentinel to stop thread
                 break
+            filename, t, product = item[:3]
+            self._process_single_file(filename, t, product, read_pbar, zarr_path)
+            download_queue.task_done()
 
-            natfolder_t = os.path.join(self.nat_path, str(t))
+    def _process_single_file(self, filename, t, product, read_pbar=None, zarr_path=None):
+        natfolder_t = os.path.join(self.nat_path, str(t))
 
-            # Unzip the .nc file(s)
-            with zipfile.ZipFile(filename) as zf:
-                for fnat in zf.namelist():
-                    if fnat.endswith('.nc'):
-                        zf.extract(fnat, natfolder_t)
+        with zipfile.ZipFile(filename) as zf:
+            for fnat in zf.namelist():
+                if fnat.endswith('.nc'):
+                    zf.extract(fnat, natfolder_t)
 
-            # Read dataset
-            t, ds = self._read_satpy_convert(natfolder_t, t)
-            identifier = product._browse_properties['identifier']
-            date_range = product._browse_properties['date']
+        # Read dataset
+        t, ds = self._read_satpy_convert(natfolder_t, t)
+        identifier = product._browse_properties['identifier']
+        date_range = product._browse_properties['date']
 
-            # Add metadata
-            id_bytes = np.array(identifier, dtype='S143')
-            t_start = self.str2unixTime(date_range.split('/')[0][:-1])
-            t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
+        # Add metadata
+        id_bytes = np.array(identifier, dtype='S143')
+        t_start = self.str2unixTime(date_range.split('/')[0][:-1])
+        t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
 
-            ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
-            ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
-            ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
-            # ds = ds.assign_coords(time=[pd.Timestamp(t)])
+        ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
+        ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
+        ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
 
-            ds.drop_vars(["lat", "lon"]).to_zarr(
+        ds = ds.drop_vars(["lat", "lon"])
+        if zarr_path is not None:
+            ds.to_zarr(
                 zarr_path,
                 region={"time": slice(t, t + 1)},
                 compute=True
             )
-
             read_pbar.update(1)
-            download_queue.task_done()
+        else:
+            return ds
+
+    # def read_convert_append(self, download_queue, read_pbar, zarr_path):
+    #     while True:
+    #         filename, t, product = download_queue.get()[:3]
+    #         if filename is None:  # Sentinel to stop thread
+    #             break
+    #         natfolder_t = os.path.join(self.nat_path, str(t))
+
+    #         # Unzip the .nc file(s)
+    #         with zipfile.ZipFile(filename) as zf:
+    #             for fnat in zf.namelist():
+    #                 if fnat.endswith('.nc'):
+    #                     zf.extract(fnat, natfolder_t)
+
+    #         # Read dataset
+    #         t, ds = self._read_satpy_convert(natfolder_t, t)
+    #         identifier = product._browse_properties['identifier']
+    #         date_range = product._browse_properties['date']
+
+    #         # Add metadata
+    #         id_bytes = np.array(identifier, dtype='S143')
+    #         t_start = self.str2unixTime(date_range.split('/')[0][:-1])
+    #         t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
+
+    #         ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
+    #         ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
+    #         ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
+    #         # ds = ds.assign_coords(time=[pd.Timestamp(t)])
+
+    #         ds = ds .drop_vars(["lat", "lon"])
+    #         ds.to_zarr(
+    #             zarr_path,
+    #             region={"time": slice(t, t + 1)},
+    #             compute=True
+    #         )
+
+    #         read_pbar.update(1)
+    #         download_queue.task_done()

@@ -4,6 +4,13 @@ import eumdac
 from eumdac import DataStore
 from utils import products_list
 from utils import EUMDownloader, bbox_mtg, init_logging, MTGDataParallel
+import satpy
+import argparse
+
+argparser = argparse.ArgumentParser(description="MTG FCI Data Downloader")
+argparser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm deletion')
+
+args = argparser.parse_args()                       
 
 logger = init_logging()
 
@@ -31,4 +38,4 @@ downloader.download_interval(
     jump_minutes=60
 )
 
-MTGDataParallel(downloader, area_reprojection="EPSG_4326_36000x18000")
+MTGDataParallel(args, downloader, area_reprojection="EPSG_4326_36000x18000")
