@@ -16,9 +16,6 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-def bbox_mtg():
-    return [-18.105469,-37.857507,60.820313,71.413177]
-
 def extract_custom_area(area_name:str, file:str):
     from pyresample import create_area_def
     import yaml 
@@ -48,8 +45,31 @@ def extract_custom_area(area_name:str, file:str):
         )
 
 
+def load_zarr_preprocess(path:str):
+    """
+    Load a preprocessed zarr file.
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Zarr file not found at {path}")
+    
+    # Open the zarr dataset
+    ds = xr.open_zarr(path, decode_times=False).chunk("auto")
+    area = extract_custom_area("mtg_fci_latlon_1km", "../src/utils/areas.yaml")
+    lons_2d, lats_2d = area.get_lonlats()
+    lon_1d = lons_2d[0, :]
+    lat_1d = lats_2d[:, 0] 
+
+    ds = ds.assign_coords(
+        lat = ("lat", lat_1d),
+        lon = ("lon", lon_1d))
+
+    ds = compute_ndvi(ds, "vis_06", "vis_08")
+    ds = ds.isel(lat=slice(None, None, -1))
+    return ds
+
+
 def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
-    from pyresample import geometry, kd_tree
+    from utils import bbox_mtg
     # Approximate 1 km resolution in degrees (at equator)
     # ~1.1 km at equator
     if full_grid:
@@ -72,29 +92,6 @@ def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
     lon2d, lat2d = np.meshgrid(lons, lats)
 
     return lats, lons, lon2d, lat2d
-
-    # # Wrap into xarray Dataset (optional)
-    # grid_ds = xr.Dataset(
-    #     coords={
-    #         "lat": ("lat", lats),
-    #         "lon": ("lon", lons)
-    #     }
-    # )
-
-    # logger.info("Grid dimensions: ", lat2d.shape)
-    # logger.info("Lat range: ", lats.min(), "to", lats.max())
-    # logger.info("Lon range: ", lons.min(), "to", lons.max())
-
-    # # Define source geometry (satellite scan)
-    # source_swath = geometry.SwathDefinition(lons=lons, lats=lats)
-
-    # # Define target grid (regular lat/lon grid)
-    # target_grid = geometry.GridDefinition(lons=lon2d, lats=lat2d)
-
-    # # Resample radiance to lat/lon grid
-    # result = kd_tree.resample_nearest(source_swath, data, target_grid,
-    #                                    radius_of_influence=50000, fill_value=None)
-    # return result
 
 
 def unzip_files(destination_folder, filename):

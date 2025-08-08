@@ -100,7 +100,7 @@ class ZarrStore:
             if var in meta_vars:
                 shape = (num_time,)
                 chunks = (self._num_timechunks,)
-                dtype = 'S143' if var == "identifier" else "datetime64[ns]"
+                dtype = 'S143' if var == "identifier" else "datetime64[s]"
                 dims = ("time",)
             else:
                 shape = (num_time, height, width)

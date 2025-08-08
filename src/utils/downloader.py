@@ -23,10 +23,7 @@ import queue
 import numpy as np
 import threading
 import xarray as xr
-import dask.array as da
-import pandas as pd
 from dask.diagnostics import ProgressBar
-from pyresample.geometry import AreaDefinition
 from typing import Union
 from pyresample.utils import proj4_str_to_dict
 
@@ -579,19 +576,17 @@ class MTGDataParallel():
             scn_resampled = scn
 
         xscene = convert.to_xarray(scn_resampled)
-        example = xscene[self.channels[0]]
-        # lats = example.coords['latitude'].values
-        # lons = example.coords['longitude'].values
 
-        # self._area_def =scn_resampled[self.channels[0]].attrs["area"]
-        # xscene.to_netcdf("./example_file.nc")     
         out={}
+
+        t_value = scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]
+        t_value = self.str2unixTime(t_value)
 
         fill_value=-32768.0
         for channel in self.channels:
             # _ = scn_resampled[channel].values # to trigger the loading of the data
             data = xscene[channel]
-            data = data.expand_dims(dim={'time': [t]})
+            data = data.expand_dims(dim={"time": [t]})
             data = data.where(~xr.ufuncs.isnan(data), fill_value)
             data = data.where(~xr.ufuncs.isinf(data), fill_value)
             data = data.clip(min=-32768, max=32767)
@@ -609,13 +604,7 @@ class MTGDataParallel():
         # Build dataset and rename dims to lat/lon
         ds = xr.Dataset(out).chunk(self.chunks)
         ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
-
-        # Assign lat/lon as 2D coordinates
-        ds = ds.assign_coords(
-            time=[scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]])
-            # lat=(('lat', 'lon'), lats),
-            # lon=(('lat', 'lon'), lons)
-        # )
+        
         ds = self._clean_metadata(ds)
 
         if self._reproject is not None:
@@ -623,10 +612,10 @@ class MTGDataParallel():
         else:
             ds = ds.compute()
 
-        return t, ds
+        return t_value, ds
 
     def str2unixTime(self, stime):
-        return np.datetime64(stime)
+        return np.datetime64(stime, "s")
     
     def _clean_metadata(self, ds, all:bool = False):
         if all:
@@ -671,7 +660,7 @@ class MTGDataParallel():
                     zf.extract(fnat, natfolder_t)
 
         # Read dataset
-        t, ds = self._read_satpy_convert(natfolder_t, t)
+        t_value, ds = self._read_satpy_convert(natfolder_t, t)
         identifier = product._browse_properties['identifier']
         date_range = product._browse_properties['date']
 
@@ -680,55 +669,20 @@ class MTGDataParallel():
         t_start = self.str2unixTime(date_range.split('/')[0][:-1])
         t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
 
-        ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
-        ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
-        ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
+        ds['identifier'] = xr.DataArray([id_bytes], dims=['time'], coords={'time': [t]})
+        # ds['unixTimeStart'] = xr.DataArray([t_start], dims=['time'], coords={'time': [0]})
+        # ds['unixTimeEnd'] = xr.DataArray([t_end], dims=['time'], coords={'time': [0]})
+        ds["timestamp"] = xr.DataArray([t_value], dims=['time'], coords={'time': [t]})
 
         ds = ds.drop_vars(["lat", "lon"])
+
         if zarr_path is not None:
             ds.to_zarr(
                 zarr_path,
-                region={"time": slice(t, t + 1)},
+                append_dim="time",
+                # region={"time": slice(t, t + 1)},
                 compute=True
             )
             read_pbar.update(1)
         else:
             return ds
-
-    # def read_convert_append(self, download_queue, read_pbar, zarr_path):
-    #     while True:
-    #         filename, t, product = download_queue.get()[:3]
-    #         if filename is None:  # Sentinel to stop thread
-    #             break
-    #         natfolder_t = os.path.join(self.nat_path, str(t))
-
-    #         # Unzip the .nc file(s)
-    #         with zipfile.ZipFile(filename) as zf:
-    #             for fnat in zf.namelist():
-    #                 if fnat.endswith('.nc'):
-    #                     zf.extract(fnat, natfolder_t)
-
-    #         # Read dataset
-    #         t, ds = self._read_satpy_convert(natfolder_t, t)
-    #         identifier = product._browse_properties['identifier']
-    #         date_range = product._browse_properties['date']
-
-    #         # Add metadata
-    #         id_bytes = np.array(identifier, dtype='S143')
-    #         t_start = self.str2unixTime(date_range.split('/')[0][:-1])
-    #         t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
-
-    #         ds['identifier'] = xr.DataArray([id_bytes], dims=('time',), coords={'time': [0]})
-    #         ds['unixTimeStart'] = xr.DataArray([t_start], dims=('time',), coords={'time': [0]})
-    #         ds['unixTimeEnd'] = xr.DataArray([t_end], dims=('time',), coords={'time': [0]})
-    #         # ds = ds.assign_coords(time=[pd.Timestamp(t)])
-
-    #         ds = ds .drop_vars(["lat", "lon"])
-    #         ds.to_zarr(
-    #             zarr_path,
-    #             region={"time": slice(t, t + 1)},
-    #             compute=True
-    #         )
-
-    #         read_pbar.update(1)
-    #         download_queue.task_done()
