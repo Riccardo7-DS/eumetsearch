@@ -588,7 +588,7 @@ class MTGDataParallel():
         for channel in self.channels:
             # _ = scn_resampled[channel].values # to trigger the loading of the data
             data = xscene[channel]
-            data = data.expand_dims(dim={"time": [t]})
+            data = data.expand_dims(dim={"time": [t_value]})
             data = data.where(~xr.ufuncs.isnan(data), fill_value)
             data = data.where(~xr.ufuncs.isinf(data), fill_value)
             data = data.clip(min=-32768, max=32767)
@@ -617,7 +617,8 @@ class MTGDataParallel():
         return t_value, ds
 
     def str2unixTime(self, stime):
-        return np.datetime64(stime, "ms")
+
+        return np.datetime64(stime, "ns")
     
     def _clean_metadata(self, ds, all:bool = False):
         if all:
@@ -671,18 +672,25 @@ class MTGDataParallel():
         t_start = self.str2unixTime(date_range.split('/')[0][:-1])
         t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
 
-        ds['identifier'] = xr.DataArray([id_bytes], dims=['time'], coords={'time': [t]})
+        # ds['identifier'] = xr.DataArray([id_bytes], dims=['time'], coords={'time': [t_value]})
         # ds['unixTimeStart'] = xr.DataArray([t_start], dims=['time'], coords={'time': [0]})
         # ds['unixTimeEnd'] = xr.DataArray([t_end], dims=['time'], coords={'time': [0]})
-        ds["timestamp"] = xr.DataArray([t_value], dims=['time'], coords={'time': [t]})
+            # Store identifier as attribute
+
+        # Ensure all variables share the same time coordinate
+        time_coord = xr.DataArray([t_value], dims=["time"])
+        ds["timestamp"] = time_coord
+        ds["unixTimeStart"] = xr.DataArray([t_start], dims=["time"])
+        ds["unixTimeEnd"] = xr.DataArray([t_end], dims=["time"])
+
 
         ds = ds.drop_vars(["lat", "lon"])
 
         if zarr_path is not None:
             ds.to_zarr(
                 zarr_path,
-                append_dim="time",
-                # region={"time": slice(t, t + 1)},
+                # append_dim="time",
+                region={"time": slice(t, t + 1)},
                 compute=True
             )
             read_pbar.update(1)

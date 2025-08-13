@@ -100,7 +100,7 @@ class ZarrStore:
             if var in meta_vars:
                 shape = (num_time,)
                 chunks = (self._num_timechunks,)
-                dtype = 'S143' if var == "identifier" else "datetime64[s]"
+                dtype = 'S143' if var == "identifier" else "datetime64[ns]"
                 dims = ("time",)
             else:
                 shape = (num_time, height, width)
@@ -113,6 +113,7 @@ class ZarrStore:
                              "chunks": chunks}
     
         ds_empty = xr.Dataset(data_vars=data_vars, coords={"time": time_coord})
+
         if ds_example is not None:
             merged_attrs = ds_example.attrs.copy()
             merged_attrs.update(ds_example[channels[1]].attrs)
@@ -121,7 +122,7 @@ class ZarrStore:
             for attr in to_del:
                 ds_empty.attrs.pop(attr, None)
 
-        ds_empty.to_zarr(zarr_path, mode='w', compute=True)
+        ds_empty.to_zarr(zarr_path, mode='w', compute=False, consolidated=True)
 
         return zarr_path, encoding
 
