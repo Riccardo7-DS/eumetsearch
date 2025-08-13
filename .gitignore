@@ -1,3 +1,5 @@
 .env
 notebooks/
 data/
+profile.svg
+*.log

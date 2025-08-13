@@ -10,7 +10,8 @@ from glob import glob
 from typing import TypeVar, Literal
 from pydantic import validate_call
 from datetime import UTC
-
+import numpy as np 
+import pyproj 
 T = TypeVar("T")
 
 
@@ -436,3 +437,48 @@ def ndvi_colormap(colormap: Literal["diverging","sequential"]):
 
     cmap_custom = ListedColormap(cols)
     return cmap_custom
+
+
+
+# _original_cos = np.cos
+# _original_sin = np.sin
+
+def debug_cos(x):
+    arr = np.asarray(x)
+    bad_mask = ~np.isfinite(arr)
+    if np.any(bad_mask):
+        logger.warning(f"cos(): {bad_mask.sum()} non-finite values detected")
+        logger.debug(f"Example bad values: {arr[bad_mask][:10]}")
+    return _original_cos(x)
+
+def debug_sin(x):
+    arr = np.asarray(x)
+    bad_mask = ~np.isfinite(arr)
+    if np.any(bad_mask):
+        logger.warning(f"sin(): {bad_mask.sum()} non-finite values detected")
+        logger.debug(f"Example bad values: {arr[bad_mask][:10]}")
+    return _original_sin(x)
+
+# np.cos = debug_cos
+# np.sin = debug_sin
+
+# -----------------------------------------------------------------------------
+# 3. Patch pyproj Transformer.transform
+# -----------------------------------------------------------------------------
+# _orig_transform = pyproj.Transformer.transform
+
+def debug_transform(self, xx, yy, *args, **kwargs):
+    xx_arr = np.asarray(xx)
+    yy_arr = np.asarray(yy)
+
+    for name, arr in [("X", xx_arr), ("Y", yy_arr)]:
+        if np.any(~np.isfinite(arr)):
+            logger.warning(f"{name} input has {np.sum(~np.isfinite(arr))} non-finite values")
+            logger.debug(f"Example bad {name} values: {arr[~np.isfinite(arr)][:10]}")
+        else:
+            # Optional: log extreme values for sanity check
+            logger.debug(f"{name} range: min={arr.min()}, max={arr.max()}")
+
+    return _orig_transform(self, xx, yy, *args, **kwargs)
+
+# pyproj.Transformer.transform = debug_transform

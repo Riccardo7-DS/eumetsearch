@@ -403,6 +403,7 @@ class MTGDataParallel():
                 downloader: EUMDownloader, 
                 channels:list= ['vis_06',  'vis_08'],
                 area_reprojection:Union[None, str]=None,
+                reprojection="nearest",
                 processes:PositiveInt=4,
                 initialize_dataset:bool=False,
                 chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
@@ -419,6 +420,7 @@ class MTGDataParallel():
         self.processes = processes
         input_shape = {"time": chunks["time"], "lat": self.size[0], "lon":self.size[1]}
         self.chunks = compute_auto_chunks(shape= input_shape)
+        self._reprojection = reprojection
 
         channelsIR = ['ir_105', 'ir_123',  'ir_133',  'ir_38',  'ir_87',  'ir_97',  'wv_63',  'wv_73']    
         channelsVIS= ['nir_13', 'nir_16',  'nir_22',  'vis_04',  'vis_05', 'vis_06',  'vis_08',  'vis_09', ]
@@ -571,7 +573,7 @@ class MTGDataParallel():
         if self._reproject:
             self._area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
             logger.info(f"Reprojecting data to {self._reproject} coordinates...")
-            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=50000, resampler="nearest")            
+            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=50000, resampler=self._reprojection)            
         else:
             scn_resampled = scn
 
@@ -615,7 +617,7 @@ class MTGDataParallel():
         return t_value, ds
 
     def str2unixTime(self, stime):
-        return np.datetime64(stime, "s")
+        return np.datetime64(stime, "ms")
     
     def _clean_metadata(self, ds, all:bool = False):
         if all:
