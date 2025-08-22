@@ -48,6 +48,7 @@ def main(args, start_date, end_date):
 if __name__ == "__main__":
     argparser = argparse.ArgumentParser(description="MTG FCI Data Downloader")
     argparser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm deletion')
+    argparser.add_argument("--remove", default=os.getenv("remove", False))
     argparser.add_argument("--resampler", default=os.getenv("resampler", "nearest"))
     args = argparser.parse_args()         
     
@@ -55,11 +56,10 @@ if __name__ == "__main__":
     end_date = "2025-05-03T00:00:00"
 
     try:
-        with cProfile.Profile() as pr:
-
-            main(args, start_date, end_date)
-        stats = pstats.Stats(pr)
-        stats.sort_stats("cumtime").print_stats(20)  # to
+        # with cProfile.Profile() as pr:
+        main(args, start_date, end_date)
+        # stats = pstats.Stats(pr)
+        # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:
         logger.error(e)
 

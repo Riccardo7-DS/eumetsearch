@@ -51,8 +51,7 @@ products_list = {
 
 class EUMDownloader:
     """Downloader for MTG products."""
-    
-    @validate_call  
+    @validate_call
     def __init__(self, 
                  product_id:str, 
                  output_dir:str,
@@ -175,7 +174,7 @@ class EUMDownloader:
             current_date += timedelta(days=1)
 
         for i, (start, end) in enumerate(intervals, 1):
-            logger.info(f"{i:03d}. Start: {start.strftime('%Y-%m-%d %H:%M:%S')}  →  End: {end.strftime('%Y-%m-%d %H:%M:%S')}")
+            logger.info(f"{i:03d}. Start: {start:%Y-%m-%d %H:%M:%S} -> End: {end:%Y-%m-%d %H:%M:%S}")
 
         return intervals
     
@@ -486,7 +485,9 @@ class MTGDataParallel():
                           ds= example_ds,
                           yes_flag=args.yes)
         
-        self._remove_all_tempfiles()
+        if args.remove is True:
+            self._remove_all_tempfiles()
+
         download_queue = queue.Queue()
         read_pbar = tqdm(total=len(self.file_list), desc="Reading files ", position=1, leave=True)
         # Start reader thread
@@ -504,7 +505,9 @@ class MTGDataParallel():
             download_queue.put((None, None, None, None))
             
         reader_thread.join()
-        self._remove_all_tempfiles()
+
+        if args.remove is True:
+            self._remove_all_tempfiles()
 
         elapsed_seconds = time.time() - t0
         hours = int(elapsed_seconds // 3600)
@@ -524,8 +527,9 @@ class MTGDataParallel():
         return
 
     def _download_file(self, product, t, download_queue= None):
-        #global download_queue
+                 
         filename = self._download_zipfile(product, self.zip_path)
+
         if download_queue is not None:
             download_queue.put((filename, t, product))
         else:
@@ -562,7 +566,6 @@ class MTGDataParallel():
 
         calibration ='reflectance'
         path_to_data = natfolder
-        fill_value = -32768
     
         # find files and assign the FCI reader
         files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
@@ -584,14 +587,12 @@ class MTGDataParallel():
         t_value = scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]
         t_value = self.str2unixTime(t_value)
 
-        fill_value=-32768.0
         for channel in self.channels:
             # _ = scn_resampled[channel].values # to trigger the loading of the data
             data = xscene[channel]
             data = data.expand_dims(dim={"time": [t_value]})
-            data = data.where(~xr.ufuncs.isnan(data), fill_value)
-            data = data.where(~xr.ufuncs.isinf(data), fill_value)
-            data = data.clip(min=-32768, max=32767)
+            data = data.where(~xr.ufuncs.isnan(data))
+            data = data.where(~xr.ufuncs.isinf(data))            
             data = data.astype('float32')
             
             data_array = xr.DataArray(
@@ -657,10 +658,11 @@ class MTGDataParallel():
     def _process_single_file(self, filename, t, product, read_pbar=None, zarr_path=None):
         natfolder_t = os.path.join(self.nat_path, str(t))
 
-        with zipfile.ZipFile(filename) as zf:
-            for fnat in zf.namelist():
-                if fnat.endswith('.nc'):
-                    zf.extract(fnat, natfolder_t)
+        if len(os.listdir(natfolder_t)) == 0:
+            with zipfile.ZipFile(filename) as zf:
+                for fnat in zf.namelist():
+                    if fnat.endswith('.nc'):
+                        zf.extract(fnat, natfolder_t)
 
         # Read dataset
         t_value, ds = self._read_satpy_convert(natfolder_t, t)
@@ -678,8 +680,8 @@ class MTGDataParallel():
             # Store identifier as attribute
 
         # Ensure all variables share the same time coordinate
-        time_coord = xr.DataArray([t_value], dims=["time"])
-        ds["timestamp"] = time_coord
+        # time_coord = xr.DataArray([t_value], dims=["time"])
+        # ds["timestamp"] = time_coord
         ds["unixTimeStart"] = xr.DataArray([t_start], dims=["time"])
         ds["unixTimeEnd"] = xr.DataArray([t_end], dims=["time"])
 
