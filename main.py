@@ -62,4 +62,5 @@ if __name__ == "__main__":
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:
         logger.error(e)
+        raise
 

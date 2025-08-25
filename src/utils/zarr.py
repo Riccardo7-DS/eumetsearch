@@ -7,6 +7,7 @@ from pydantic import PositiveInt
 import math
 import logging
 import shutil
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,7 @@ class ZarrStore:
             "wv_63", "wv_73"
         }
 
-        meta_vars = ["identifier", "unixTimeStart", "unixTimeEnd"]
+        meta_vars = ["identifier", "timeStart", "timeEnd"]
 
         assert all(v in all_vars for v in channels), "One or more channels are invalid"
         selected_vars = set(channels)
@@ -101,14 +102,16 @@ class ZarrStore:
                 shape = (num_time,)
                 chunks = (self._num_timechunks,)
                 dtype = 'S143' if var == "identifier" else "datetime64[ns]"
+                fill_value = '' if var == "identifier" else np.datetime64("NaT")
                 dims = ("time",)
             else:
                 shape = (num_time, height, width)
                 chunks = (self._num_timechunks, self._num_ychunks, self._num_xchunks)
                 dtype = 'float32' if var.startswith("vis_") else 'int32'
+                fill_value = np.nan
                 dims = ("time", "lat", "lon")
 
-            data_vars[var] = (dims, da.empty(shape, dtype=dtype, chunks=chunks))
+            data_vars[var] = (dims, da.full(shape, fill_value, dtype=dtype, chunks=chunks))
             encoding[var] = {"compressor": compressor, 
                              "chunks": chunks}
     

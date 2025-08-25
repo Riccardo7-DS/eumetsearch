@@ -66,7 +66,10 @@ def load_zarr_preprocess(path:str):
 
     ds = compute_ndvi(ds, "vis_06", "vis_08")
     ds = ds.isel(lat=slice(None, None, -1))
-    return ds
+    time_array = np.array(ds["timeStart"].values, dtype="datetime64[ns]")
+    ds = ds.assign_coords(time=("time", time_array))
+
+    return ds[["vis_06", "vis_08", "ndvi"]]
 
 
 def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
@@ -144,6 +147,36 @@ def init_logging(log_file:str=None, verbose:bool=False)-> logging.Logger:
     logger = logging.getLogger()
     return logger
 
+
+def debug_time_vars(ds, vars_to_check=("timeStart", "timeEnd", "identifier"), n_preview=5):
+    """
+    Print dtype, shape, and sample values of time-related variables in an xarray Dataset.
+    
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset to inspect
+    vars_to_check : tuple
+        Names of variables to debug
+    n_preview : int
+        How many values to preview
+    """
+    for var in vars_to_check:
+        if var in ds:
+            arr = ds[var].values
+            logger.info(f"\n--- {var} ---")
+            logger.info(f"  dtype: {ds[var].dtype}")
+            logger.info(f"  shape: {ds[var].shape}")
+            
+            # Show first few values
+            preview = arr[:n_preview]
+            logger.info(f"  preview: {preview}")
+            
+            # Check if NaT / invalids exist
+            is_nat = pd.isna(preview)
+            logger.info(f"  contains NaT? {is_nat.any()} (in preview: {is_nat})")
+        else:
+            logger.info(f"\n!!! {var} not found in dataset !!!")
 
 def assert_(item: T, message: str, exception: type[Exception] = ValueError, silent: bool = True) -> T:
     """Assert the truth value of the item, and return the item or raise ``exception``.

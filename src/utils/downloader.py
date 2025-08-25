@@ -1,5 +1,4 @@
 import eumdac
-import datetime
 import subprocess
 from datetime import timedelta, datetime, timezone
 from eumdac.collection import SearchResults
@@ -25,8 +24,8 @@ import threading
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from typing import Union
-from pyresample.utils import proj4_str_to_dict
-
+from http.client import IncompleteRead
+from urllib3.exceptions import ProtocolError
 tb = ProgressBar().register()
 
 
@@ -501,6 +500,9 @@ class MTGDataParallel():
             for _ in as_completed(futures):
                 download_pbar.update(1)
 
+            for f in futures:
+                f.result()
+
         for _ in range(self.processes):
             download_queue.put((None, None, None, None))
             
@@ -544,16 +546,53 @@ class MTGDataParallel():
             szdsk=os.path.getsize(outfilename)
             if szdsk/1000 > dssz:
                 return outfilename
-        with product.open() as fsrc, \
-                open(os.path.join(dest_folder, fsrc.name), mode='wb') as fdst:
-            shutil.copyfileobj(fsrc, fdst)
-        return os.path.join(dest_folder, fsrc.name)
+        # with product.open() as fsrc, \
+        #         open(os.path.join(dest_folder, fsrc.name), mode='wb') as fdst:
+        #     shutil.copyfileobj(fsrc, fdst)
+        # return os.path.join(dest_folder, fsrc.name)
+
+        return self._safe_download(product=product, dest_folder=dest_folder)
     
 
     def _get_coords_area(self):
             """Create an AreaDefinition for the dataset."""
             lons, lats = self._area_def.get_lonlats()
             return lons, lats
+    
+    def _safe_download(self, product, dest_folder, max_retries=5, backoff=5):
+        """
+        Download a product with retries in case of IncompleteRead or connection issues.
+
+        Args:
+            product: object with .open() method returning a file-like object
+            dest_folder: folder to write into
+            max_retries: maximum retry attempts
+            backoff: seconds to wait between retries (increases linearly)
+
+        Returns:
+            str: path to downloaded file
+        """
+        attempt = 0
+        dest_path = None
+
+        while attempt < max_retries:
+            try:
+                with product.open() as fsrc, \
+                     open(os.path.join(dest_folder, os.path.basename(fsrc.name)), mode="wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+
+                dest_path = os.path.join(dest_folder, os.path.basename(fsrc.name))
+                return dest_path
+
+            except (IncompleteRead, OSError, ProtocolError) as e:
+                attempt += 1
+                logger.info(f"⚠️ Download failed (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    time.sleep(backoff * attempt)  # exponential-ish backoff
+                else:
+                    raise RuntimeError(f"Download failed after {max_retries} attempts: {e}")
+
+        return dest_path
     
     def _read_satpy_convert(self, natfolder, t=None):
         from satpy.scene import Scene
@@ -576,7 +615,7 @@ class MTGDataParallel():
         if self._reproject:
             self._area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
             logger.info(f"Reprojecting data to {self._reproject} coordinates...")
-            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=50000, resampler=self._reprojection)            
+            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=5000, resampler=self._reprojection)            
         else:
             scn_resampled = scn
 
@@ -593,7 +632,7 @@ class MTGDataParallel():
             data = data.expand_dims(dim={"time": [t_value]})
             data = data.where(~xr.ufuncs.isnan(data))
             data = data.where(~xr.ufuncs.isinf(data))            
-            data = data.astype('float32')
+            data = data.astype('float32')   
             
             data_array = xr.DataArray(
                 data.drop_vars(["x","y"]).rename({"y":"lat", "x":"lon"}),
@@ -617,9 +656,20 @@ class MTGDataParallel():
 
         return t_value, ds
 
-    def str2unixTime(self, stime):
+    def str2unixTime(self, stime) -> np.datetime64:
 
-        return np.datetime64(stime, "ns")
+        if isinstance(stime, np.datetime64):
+            return stime  # already the right type
+        elif isinstance(stime, datetime):
+            return np.datetime64(stime, "ns")
+        elif isinstance(stime, str):
+            try:
+                return np.datetime64(stime, "ns")
+            except Exception as e:
+                raise ValueError(f"Failed to parse datetime string {stime!r}: {e}")
+        else:
+            raise ValueError(f"Unsupported type for str2unixTime: {type(stime)} ({stime!r})")
+
     
     def _clean_metadata(self, ds, all:bool = False):
         if all:
@@ -636,6 +686,15 @@ class MTGDataParallel():
             
         return ds
     
+    def _extract_datetime(self, s, convert_datetime:bool=False):
+        import re
+        matches = re.findall(r"\d{14}", s)
+        if matches:
+            if convert_datetime:
+                return datetime.strptime(matches[1], "%Y%m%d%H%M%S")   
+            else:
+                return matches[1] 
+    
     def read_convert_append(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None,  t=None):
         if download_queue is None:
             if filename is None:
@@ -649,20 +708,31 @@ class MTGDataParallel():
         # Queue-based threaded processing
         while True:
             item = download_queue.get()
-            if item[0] is None:  # Sentinel to stop thread
-                break
-            filename, t, product = item[:3]
-            self._process_single_file(filename, t, product, read_pbar, zarr_path)
-            download_queue.task_done()
+            try:
+                if item[0] is None:  # Sentinel to stop thread
+                    break
+                filename, t, product = item[:3]
+                self._process_single_file(filename, t, product, read_pbar, zarr_path)
+            finally:
+                download_queue.task_done()
+
+    def _extract_netcdf_files(self, filename, natfolder_t):
+        with zipfile.ZipFile(filename) as zf:
+            for fnat in zf.namelist():
+                if fnat.endswith('.nc'):
+                    zf.extract(fnat, natfolder_t)
+
 
     def _process_single_file(self, filename, t, product, read_pbar=None, zarr_path=None):
+        from utils import debug_time_vars
+
+        # file_n = self._extract_datetime(filename)
         natfolder_t = os.path.join(self.nat_path, str(t))
 
+        os.makedirs(natfolder_t, exist_ok=True)
+
         if len(os.listdir(natfolder_t)) == 0:
-            with zipfile.ZipFile(filename) as zf:
-                for fnat in zf.namelist():
-                    if fnat.endswith('.nc'):
-                        zf.extract(fnat, natfolder_t)
+            self._extract_netcdf_files(filename, natfolder_t)
 
         # Read dataset
         t_value, ds = self._read_satpy_convert(natfolder_t, t)
@@ -674,19 +744,22 @@ class MTGDataParallel():
         t_start = self.str2unixTime(date_range.split('/')[0][:-1])
         t_end   = self.str2unixTime(date_range.split('/')[1][:-1])
 
-        # ds['identifier'] = xr.DataArray([id_bytes], dims=['time'], coords={'time': [t_value]})
-        # ds['unixTimeStart'] = xr.DataArray([t_start], dims=['time'], coords={'time': [0]})
-        # ds['unixTimeEnd'] = xr.DataArray([t_end], dims=['time'], coords={'time': [0]})
-            # Store identifier as attribute
+        ds['identifier'] = xr.DataArray(
+            [id_bytes], dims=['time'], coords={"time": ds.time}
+        )
 
         # Ensure all variables share the same time coordinate
-        # time_coord = xr.DataArray([t_value], dims=["time"])
-        # ds["timestamp"] = time_coord
-        ds["unixTimeStart"] = xr.DataArray([t_start], dims=["time"])
-        ds["unixTimeEnd"] = xr.DataArray([t_end], dims=["time"])
+        ds["timeStart"] = xr.DataArray(
+            [t_start], dims=["time"], coords={"time": ds.time}
+        )
+        ds["timeEnd"] = xr.DataArray(
+            [t_end], dims=["time"], coords={"time": ds.time}
+        )
 
 
         ds = ds.drop_vars(["lat", "lon"])
+
+        debug_time_vars(ds)
 
         if zarr_path is not None:
             ds.to_zarr(
