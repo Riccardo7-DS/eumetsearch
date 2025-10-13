@@ -42,7 +42,7 @@ class ZarrStore:
         self.path = zarr_path
 
     def zarr_store_create(self, label, channels, size, ds_example=None, yes_flag=False):
-        def on_rm_error(func, path, exc_info):
+        def on_rm_error(func, path, exec_info):
             import stat
             os.chmod(path, stat.S_IWRITE)
             func(path)
@@ -57,21 +57,21 @@ class ZarrStore:
                 response = 'yes'
             else:
                 response = input(
-                    f"The folder '{zarr_path.split('/')[-1]}' already exists. Do you want to delete it? (yes/no): "
+                    f"The folder '{os.path.basename(zarr_path)}' already exists. Do you want to delete it? (yes/no): "
                 ).strip().lower()
 
             if response == 'yes':
                 try:
-                    shutil.rmtree(zarr_path, onexc=on_rm_error)
+                    shutil.rmtree(zarr_path, onerror=on_rm_error)
                     logger.info(f"Deleted existing folder: {zarr_path}")
                 except Exception as e:
                     logger.error(f"Error deleting folder {zarr_path}: {e}")
                     raise FileExistsError(
-                        f"Could not delete folder '{zarr_path.split('/')[-1]}'. Please delete it manually or choose a different folder."
+                        f"Could not delete folder '{os.path.basename(zarr_path)}'. Please delete it manually or choose a different folder."
                     )
             else:
                 raise FileExistsError(
-                    f"Folder '{zarr_path.split('/')[-1]}' already exists. Please choose a different folder or delete the existing one."
+                    f"Folder '{os.path.basename(zarr_path)}' already exists. Please choose a different folder or delete the existing one."
                 )
                 
 
