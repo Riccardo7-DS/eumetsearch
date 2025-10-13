@@ -148,6 +148,37 @@ def init_logging(log_file:str=None, verbose:bool=False)-> logging.Logger:
     return logger
 
 
+def ndvi_colormap(colormap: Literal["diverging","sequential"]):
+    from  matplotlib.colors import ListedColormap, BoundaryNorm, LinearSegmentedColormap
+
+
+    if colormap == "diverging":
+
+        # List of corresponding colors in hexadecimal format (reversed order)
+        cols = [
+            "#c0c0c0",
+            "#954535",
+            "#FF0000",
+            "#E97451",
+            "#FFA500",
+            "#FFD700",
+            "#DFFF00",
+            "#CCFF00",
+            "#00FF00",
+            "#00BB00",
+            "#008800",
+            "#006600",
+            "#7F00FF"
+        ]
+
+    elif colormap == "sequential":
+        cols = ["#ffffe5","#f7fcb9","#d9f0a3","#addd8e","#78c679","#41ab5d",
+                "#238443","#006837","#004529"]
+
+    cmap_custom = ListedColormap(cols)
+    return cmap_custom
+
+
 def debug_time_vars(ds, vars_to_check=("timeStart", "timeEnd", "identifier"), n_preview=5):
     """
     Print dtype, shape, and sample values of time-related variables in an xarray Dataset.

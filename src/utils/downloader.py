@@ -25,11 +25,14 @@ import xarray as xr
 from dask.diagnostics import ProgressBar
 from typing import Union
 from http.client import IncompleteRead
+import json 
 from urllib3.exceptions import ProtocolError
 tb = ProgressBar().register()
 
 
 logger = logging.getLogger(__name__)
+
+
 
 """
 Part of the code has been adapted from monkey_wrench https://github.com/pkhalaj/monkey-wrench
@@ -398,7 +401,8 @@ class EUMDownloader:
 class MTGDataParallel():
     def __init__(self,
                 args:dict,  
-                downloader: EUMDownloader, 
+                downloader: EUMDownloader,
+                label:str, 
                 channels:list= ['vis_06',  'vis_08'],
                 area_reprojection:Union[None, str]=None,
                 reprojection="nearest",
@@ -432,7 +436,7 @@ class MTGDataParallel():
         self.nat_path = Path(self.output_dir) / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
-        self.download_to_zarr(args, self.file_list, initialize_dataset)
+        self.download_to_zarr(args, self.file_list, initialize_dataset, label)
 
     def _get_size(self, area_reprojection:str):
         if area_reprojection == "worldeqc3km":
@@ -447,9 +451,18 @@ class MTGDataParallel():
             return [18000, 36000]
         else: 
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
+        
+
+    def _mark_done(self, task_id: str):
+        if self.status_file.exists():
+            status = json.loads(self.status_file.read_text())
+        else:
+            status = {}
+        status[task_id] = "done"
+        self.status_file.write_text(json.dumps(status, indent=2))
 
 
-    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool):
+    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str):
         from utils import ZarrStore
         t0= time.time()
         file_list = sorted(self.file_list, 
@@ -481,8 +494,11 @@ class MTGDataParallel():
                           file_list=self.file_list,
                           channels=self.channels,
                           chunks= self.chunks,
+                          label=label,
                           ds= example_ds,
                           yes_flag=args.yes)
+        
+        self.status_file = Path(store.path).with_suffix(".status.json")
         
         if args.remove is True:
             self._remove_all_tempfiles()
@@ -769,5 +785,8 @@ class MTGDataParallel():
                 compute=True
             )
             read_pbar.update(1)
+
+            task_id = f"{t_start}_{t}"
+            self._mark_done(task_id)
         else:
             return ds

@@ -18,6 +18,7 @@ class ZarrStore:
                  file_list:list,
                  channels:list, 
                  ds:xr.Dataset=None,
+                 label:str="VIS",
                  chunks: dict = {"time": 1, "lat": "auto", "lon": "auto"}, 
                  n_workers:PositiveInt=4,
                  yes_flag:bool=False):
@@ -32,7 +33,7 @@ class ZarrStore:
         self._n_workers = n_workers
 
         zarr_path , encoding = self.zarr_store_create(
-            label='VIS', 
+            label=label, 
             channels=channels, 
             size=size,
             ds_example=ds,
