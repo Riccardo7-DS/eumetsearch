@@ -126,18 +126,27 @@ if __name__ == "__main__":
     import psutil
     import time
     import threading, traceback
+    import dask
     import logging
     logger = logging.getLogger(__name__)
 
     argparser = argparse.ArgumentParser(description="MTG FCI Data Downloader")
+    argparser.add_argument("--dask_threads", default=os.getenv("dask_threads", 0), type=int, help="Number of Dask threads (0 for single-threaded)")
     argparser.add_argument('-t', '--threading', action='store_false', help='Use threading for I/O operations')
     argparser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm deletion of zarr')
     argparser.add_argument('-r', '--remove', action='store_true', help='Automatically confirm deletion of source files')
     argparser.add_argument("--resampler", default=os.getenv("resampler", "nearest"))
     args = argparser.parse_args()
-    
+
+    if args.dask_threads > 0:
+        logger.info(f"Using {args.dask_threads} dask threads")
+        dask.config.set(scheduler="threads", num_workers=args.dask_threads)    
+    else:
+        logger.info("Using single dask scheduler")
+        dask.config.set(scheduler="single-threaded")
+
     start_date = "2025-05-01T09:00:00"
-    end_date = "2025-05-01T09:30:00"
+    end_date = "2025-10-13T09:30:00"
 
     try:
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
