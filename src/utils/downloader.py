@@ -435,6 +435,9 @@ class MTGDataParallel():
         self.nat_path = Path(self.output_dir) / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
+        self.zarr_lock = Lock()
+        self.nectdf_lock = Lock()
+
         self.download_to_zarr(args, self.file_list, initialize_dataset, label)
 
     def _get_size(self, area_reprojection:str):
@@ -503,7 +506,7 @@ class MTGDataParallel():
         
         self.status_file = Path(store.path).with_suffix(".status.json")
         
-        if args.remove is True:
+        if args.remove:
             self._remove_all_tempfiles()
 
         download_queue = queue.Queue()
@@ -700,7 +703,7 @@ class MTGDataParallel():
         from pyproj import CRS
         from utils import extract_custom_area
 
-        area_def = extract_custom_area("mtg_fci_latlon_1km", "./src/utils/areas.yaml")
+        area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
         return scn.resample(area_def, radius_of_influence=5000, resampler=self._reprojection)
     
     def _dataset_reproject_loop(self, scn):
@@ -900,16 +903,18 @@ class MTGDataParallel():
 
         debug_time_vars(ds)
 
+        
         if zarr_path is not None:
-            ds.to_zarr(
-                zarr_path,
-                # append_dim="time",
-                region={"time": slice(t, t + 1)},
-                compute=True
-            )
-            read_pbar.update(1)
+            with self.nectdf_lock:
+                ds.to_zarr(
+                    zarr_path,
+                    # append_dim="time",
+                    region={"time": slice(t, t + 1)},
+                    compute=True
+                )
+                read_pbar.update(1)
 
-            task_id = f"{t_start}_{t}"
-            self._mark_done(task_id)
+                task_id = f"{t_start}_{t}"
+                self._mark_done(task_id)
         else:
             return ds
