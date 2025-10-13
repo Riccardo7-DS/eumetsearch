@@ -3,7 +3,7 @@ import subprocess
 from datetime import timedelta, datetime, timezone
 from eumdac.collection import SearchResults
 from eumdac.tailor_models import  RegionOfInterest
-from concurrent.futures import as_completed    
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from pathlib import Path
 import time
 import fnmatch
@@ -11,7 +11,6 @@ import eumdac
 from typing import Literal
 import warnings
 import os
-import concurrent 
 from dotenv import load_dotenv
 import zipfile
 import shutil
@@ -20,15 +19,14 @@ from pydantic import validate_call, PositiveInt
 import logging
 import queue
 import numpy as np
-import threading
 import xarray as xr
 from dask.diagnostics import ProgressBar
 from typing import Union
 from http.client import IncompleteRead
 import json 
 from urllib3.exceptions import ProtocolError
+from threading import Thread, Lock
 tb = ProgressBar().register()
-
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +62,7 @@ class EUMDownloader:
         self._token = None
         self._token_expiration = None
 
+
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -83,7 +82,6 @@ class EUMDownloader:
         self.product_name = products_list[product_key]["product_name"]
         self.product_id = product_id
         self.channels = products_list[product_key]["bands"]
-
 
     @staticmethod
     def len(product_ids: SearchResults) -> int:
@@ -207,10 +205,10 @@ class EUMDownloader:
     def chunks_download(self, file_list, bounding_box):
         chunks = self._split_intervals_for_threading(self.intervals, self.max_parallel_conns)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_parallel_conns) as executor:
+        with ThreadPoolExecutor(max_workers=self.max_parallel_conns) as executor:
             futures = [executor.submit(self._download_products, chunk, self._selected_collection, self.output_dir, bounding_box)
                        for chunk in chunks]
-            for future in concurrent.futures.as_completed(futures):
+            for future in as_completed(futures):
                 try:
                     future.result()
                 except Exception as e:
@@ -268,7 +266,6 @@ class EUMDownloader:
             
             
     def _datastore_thread_download(self, intervals, bounding_box=None):
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import zipfile
         from tqdm import tqdm
         """
@@ -415,6 +412,7 @@ class MTGDataParallel():
         
         from utils import compute_auto_chunks
 
+
         self.file_list = downloader.file_list
         self.output_dir = downloader.output_dir
         self.size = self._get_size(area_reprojection)
@@ -423,6 +421,7 @@ class MTGDataParallel():
         input_shape = {"time": chunks["time"], "lat": self.size[0], "lon":self.size[1]}
         self.chunks = compute_auto_chunks(shape= input_shape)
         self._reprojection = reprojection
+        self._threading = args.threading
 
         channelsIR = ['ir_105', 'ir_123',  'ir_133',  'ir_38',  'ir_87',  'ir_97',  'wv_63',  'wv_73']    
         channelsVIS= ['nir_13', 'nir_16',  'nir_22',  'vis_04',  'vis_05', 'vis_06',  'vis_08',  'vis_09', ]
@@ -464,18 +463,22 @@ class MTGDataParallel():
 
     def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str):
         from utils import ZarrStore
-        t0= time.time()
-        file_list = sorted(self.file_list, 
-            key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1]))
-        
+        t0 = time.time()
+
+        file_list = sorted(
+            self.file_list,
+            key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1])
+        )
+
         if initialize_dataset:
             t = 0
             filename = self._download_file(product=self.file_list[t], t=t)
             example_ds = self.read_convert_append(filename=filename, t=t)
 
             example_ds = example_ds.assign_attrs(
-                chunks = self.chunks,
-                origin_size = self.size)
+                chunks=self.chunks,
+                origin_size=self.size
+            )
 
             example_ds.attrs['area_definition'] = {
                 'area_id': self._area_def.area_id,
@@ -504,33 +507,46 @@ class MTGDataParallel():
             self._remove_all_tempfiles()
 
         download_queue = queue.Queue()
-        read_pbar = tqdm(total=len(self.file_list), desc="Reading files ", position=1, leave=True)
-        # Start reader thread
-        reader_thread = threading.Thread(target=self.read_convert_append, args=(download_queue, read_pbar, store.path))
-        reader_thread.start()
+        read_pbar = tqdm(total=len(self.file_list), desc="Reading files", position=1, leave=True)
         download_pbar = tqdm(total=len(self.file_list), desc="Downloading files", position=0, leave=True)
-        
-        # Use ThreadPoolExecutor to download files in parallel
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.processes) as executor:
-            futures = [executor.submit(self._download_file, self.file_list[t], t, download_queue) for t in range(len(file_list))]
+
+        # --- Conditional threading mode ---
+        if getattr(args, "threading", False):  # Only use threading if args.threading is True
+            reader_thread = Thread(target=self.read_convert_append, args=(download_queue, read_pbar, store.path))
+            reader_thread.start()
+            use_threading = True
+        else:
+            use_threading = False
+            logger.info("Running read_convert_append sequentially (no threading).")
+
+        # --- Parallel download ---
+        with ThreadPoolExecutor(max_workers=self.processes) as executor:
+            futures = [executor.submit(self._download_file, self.file_list[t], t, download_queue)
+                       for t in range(len(file_list))]
             for _ in as_completed(futures):
                 download_pbar.update(1)
-
             for f in futures:
                 f.result()
 
-        for _ in range(self.processes):
-            download_queue.put((None, None, None, None))
-            
-        reader_thread.join()
+        # --- Stop reader thread or run sequentially ---
+        if use_threading:
+            for _ in range(self.processes):
+                download_queue.put((None, None, None, None))
+            reader_thread.join()
+        else:
+            # Read sequentially if no threading
+            for t, product in enumerate(self.file_list):
+                filename = self._download_file(product, t)
+                self.read_convert_append(filename=filename, t=t, zarr_path=store.path)
+                read_pbar.update(1)
 
-        if args.remove is True:
+        if args.remove:
             self._remove_all_tempfiles()
 
         elapsed_seconds = time.time() - t0
         hours = int(elapsed_seconds // 3600)
         minutes = int((elapsed_seconds % 3600) // 60)
-        logger.info(f"Done in {hours} hours {minutes} minutes") 
+        logger.info(f"Done in {hours} hours {minutes} minutes")
 
     def _remove_all_tempfiles(self):
         import os
@@ -545,6 +561,15 @@ class MTGDataParallel():
         return
 
     def _download_file(self, product, t, download_queue= None):
+        """Download a single file and put it in the queue if provided.
+        
+        Args:
+            product: product object to download
+            t: time index
+            download_queue: queue to put the result in (optional)
+        Returns:
+            filename if download_queue is None
+        """
                  
         filename = self._download_zipfile(product, self.zip_path)
 
@@ -610,67 +635,139 @@ class MTGDataParallel():
 
         return dest_path
     
-    def _read_satpy_convert(self, natfolder, t=None):
-        from satpy.scene import Scene
-        from satpy import find_files_and_readers
-        from satpy import _scene_converters as convert
-        from utils import extract_custom_area
-                
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")  
+    def warp_geostationary_to_regular_grid(self, src_array, area_src, target_width, target_height):
+       
+        """
+        Reproject a geostationary source array (pyresample area) to a regular EPSG:4326 lat/lon grid.    
+        Parameters:
+            src_array: np.ndarray
+                Source array of shape (ny, nx)
+            area_src: pyresample AreaDefinition
+                Source geostationary area
+            target_width: int
+                Width of target grid
+            target_height: int
+                Height of target grid    
+        Returns:
+            warped_array: np.ndarray
+                Reprojected array in EPSG:4326
+        """    
+        from osgeo import gdal
+        from pyproj import CRS, Transformer
+        ny, nx = src_array.shape    
+        # ---- Create in-memory GDAL source dataset ----
+        src_ds = gdal.GetDriverByName("MEM").Create("", nx, ny, 1, gdal.GDT_Float32)
+        src_ds.GetRasterBand(1).WriteArray(src_array)
+        src_ds.GetRasterBand(1).FlushCache()    
 
-        calibration ='reflectance'
-        path_to_data = natfolder
+        # ---- Set geotransform ----
+        min_x, max_y, max_x, min_y = area_src.area_extent
+        pixel_width = (max_x - min_x) / area_src.width
+        pixel_height = (max_y - min_y) / area_src.height
+        geo_transform_src = (min_x, pixel_width, 0, max_y, 0, -pixel_height)
+        src_ds.SetGeoTransform(geo_transform_src)    
+        # area_src.proj_dict is your geostationary dict
+        crs_src = CRS.from_dict(area_src.proj_dict)    
+        # Convert to WKT for GDAL
+        wkt_src = crs_src.to_wkt()
+        src_ds.SetProjection(wkt_src)    
+        # Assign to your GDAL MEM dataset    
+        transformer = Transformer.from_crs(crs_src, CRS.from_epsg(4326), always_xy=True
+        )    
+        # Source corners
+        lon_min, lat_max = transformer.transform(min_x, max_y)
+        lon_max, lat_min = transformer.transform(max_x, min_y)
+        geo_bounds = (lon_min, lat_min, lon_max, lat_max)    
+        if not isinstance(geo_bounds, (list, tuple)) or len(geo_bounds) != 4:
+             raise ValueError("geo_bounds must be a 4-element tuple (minX, minY, maxX, maxY)")    
+        
+        # ---- GDAL Warp to target grid ----
+        warp_opts = gdal.WarpOptions(
+            format="MEM",
+            outputBounds=geo_bounds,  # in degrees
+            width=target_width,
+            height=target_height,
+            dstSRS="EPSG:4326",
+            resampleAlg="bilinear",
+            multithread=False
+        )    
+        dst_ds = gdal.Warp(destNameOrDestDS=None, srcDSOrSrcDSTab=src_ds, options=warp_opts)
+        warped_array = dst_ds.GetRasterBand(1).ReadAsArray()    
+        return warped_array
     
-        # find files and assign the FCI reader
-        files = find_files_and_readers(base_dir=path_to_data, reader='fci_l1c_nc',missing_ok=True)
-        # create an FCI scene from the selected files
-        scn = Scene(filenames=files)       
-        scn.load(self.channels, calibration=calibration)
+    def _resample_pyresample(self, scn):
+        from pyresample import create_area_def
+        from pyproj import CRS
+        from utils import extract_custom_area
 
+        area_def = extract_custom_area("mtg_fci_latlon_1km", "./src/utils/areas.yaml")
+        return scn.resample(area_def, radius_of_influence=5000, resampler=self._reprojection)
+    
+    def _dataset_reproject_loop(self, scn):
+        out = {}
+        
         if self._reproject:
-            self._area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
-            logger.info(f"Reprojecting data to {self._reproject} coordinates...")
-            scn_resampled = scn.resample(destination=self._area_def, radius_of_influence=5000, resampler=self._reprojection)            
-        else:
-            scn_resampled = scn
-
-        xscene = convert.to_xarray(scn_resampled)
-
-        out={}
-
-        t_value = scn_resampled["vis_06"].attrs["time_parameters"]["nominal_start_time"]
+            scn_resampled = self._resample_pyresample(scn)
+  
+        # -------------------------------------------------------------
+        # Get timestamp from scene
+        # -------------------------------------------------------------
+        t_value = scn[self.channels[0]].attrs["time_parameters"]["nominal_start_time"]
         t_value = self.str2unixTime(t_value)
 
         for channel in self.channels:
-            # _ = scn_resampled[channel].values # to trigger the loading of the data
-            data = xscene[channel]
-            data = data.expand_dims(dim={"time": [t_value]})
-            data = data.where(~xr.ufuncs.isnan(data))
-            data = data.where(~xr.ufuncs.isinf(data))            
-            data = data.astype('float32')   
-            
+            logger.info(f"Reprojecting channel {channel}...")
+            arr = scn_resampled[channel].values
+            # ---- Convert to xarray ----
             data_array = xr.DataArray(
-                data.drop_vars(["x","y"]).rename({"y":"lat", "x":"lon"}),
-                dims=('time', 'lat', 'lon'),
+                arr[np.newaxis, :, :],
+                dims=("time", "lat", "lon"),
+                coords={"time": [t_value]},
                 name=channel,
-                attrs=data.attrs
+                attrs=scn[channel].attrs
             )
-
             out[channel] = data_array
 
-        # Build dataset and rename dims to lat/lon
-        ds = xr.Dataset(out).chunk(self.chunks)
-        ds = ds.rename({'latitude': 'lat', 'longitude': 'lon'})
-        
+        if self._reproject:
+            logger.info("Reprojection of all channels complete.")
+
+        ds = xr.Dataset(out)
         ds = self._clean_metadata(ds)
 
-        if self._reproject is not None:
-            ds= ds.persist()
+        return ds, t_value
+
+
+    def _read_satpy_convert(self, natfolder, t=None):
+        import warnings, numpy as np
+        from satpy.scene import Scene
+        from satpy import find_files_and_readers
+        from utils import single_thread_env
+
+        # -------------------------------------------------------------
+        # Load Satpy scene
+        # -------------------------------------------------------------
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+        calibration = "reflectance"
+        files = find_files_and_readers(base_dir=natfolder, reader="fci_l1c_nc", missing_ok=True)
+        scn = Scene(filenames=files)
+        scn.load(self.channels, calibration=calibration)
+
+        # -------------------------------------------------------------
+        # Thread-safe environment for pyproj (no multithreading issues)
+        # -------------------------------------------------------------
+        if not self._threading:
+            with single_thread_env():
+                logger.info("Entering thread-safe reprojection mode...")
+
+                ds, t_value = self._dataset_reproject_loop(scn)
+
         else:
-            ds = ds.compute()
+            ds, t_value = self._dataset_reproject_loop(scn)
 
         return t_value, ds
+
 
     def str2unixTime(self, stime) -> np.datetime64:
 
@@ -712,6 +809,21 @@ class MTGDataParallel():
                 return matches[1] 
     
     def read_convert_append(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None,  t=None):
+        """
+        Read, convert, and append data to Zarr store.
+        If download_queue is provided, it will read from the queue in a loop.
+        Otherwise, it processes a single file specified by filename and t.
+        
+        Parameters:
+        - download_queue: Queue for threaded processing (optional)
+        - read_pbar: Progress bar for reading (optional)
+        - zarr_path: Path to Zarr store (optional)
+        - filename: Filename to process (required if download_queue is None)
+        - t: Time index (required if download_queue is None)
+                                                                
+        """
+
+
         if download_queue is None:
             if filename is None:
                 raise ValueError("Filename must be provided when not using a download queue.")
@@ -740,6 +852,16 @@ class MTGDataParallel():
 
 
     def _process_single_file(self, filename, t, product, read_pbar=None, zarr_path=None):
+        """Process a single file: extract, read, convert, and append to Zarr or return dataset.
+        
+        Parameters:
+        - filename: Path to the zip file
+        - t: Time index
+        - product: Product object for metadata
+        - read_pbar: Progress bar for reading (optional)
+        - zarr_path: Path to Zarr store (optional)
+        """
+
         from utils import debug_time_vars
 
         # file_n = self._extract_datetime(filename)
@@ -772,8 +894,9 @@ class MTGDataParallel():
             [t_end], dims=["time"], coords={"time": ds.time}
         )
 
-
-        ds = ds.drop_vars(["lat", "lon"])
+        # Drop lat/lon if present (they are in the area definition)
+        if "lat" in ds and "lon" in ds:
+            ds = ds.drop_vars(["lat", "lon"])
 
         debug_time_vars(ds)
 

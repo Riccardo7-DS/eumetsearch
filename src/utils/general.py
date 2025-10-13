@@ -13,9 +13,35 @@ from datetime import UTC
 import numpy as np 
 import pyproj 
 T = TypeVar("T")
+from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def single_thread_env():
+    """Temporarily force all relevant libs (GDAL, BLAS, etc.) to use 1 thread."""
+    env_vars = [
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "GDAL_NUM_THREADS",
+    ]
+    old_env = {v: os.environ.get(v) for v in env_vars}
+
+    try:
+        for v in env_vars:
+            os.environ[v] = "1"
+        yield
+    finally:
+        # restore original environment
+        for v, old_val in old_env.items():
+            if old_val is not None:
+                os.environ[v] = old_val
+            else:
+                os.environ.pop(v, None)
 
 def extract_custom_area(area_name:str, file:str):
     from pyresample import create_area_def

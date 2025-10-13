@@ -1,34 +1,33 @@
-[tool.poetry]
+[project]
 name = "mtg-fci-query"
 version = "0.1.0"
 description = "Package to download data from MTG FCI"
-authors = ["Riccardo D'Ercole"]
+authors = [
+  { name = "Riccardo D’Ercole" }
+]
 readme = "README.md"
+requires-python =">=3.11"
 
-packages = [
-    { include = "utils", from = "src" }
+dependencies = [
+    "xarray>=2025.7.1,<2026.0.0",
+    "eumdac>=3.0.0,<4.0.0",
+    "python-dotenv>=1.1.1,<2.0.0",
+    "tqdm>=4.67.1",
+    "netcdf4>=1.7.2",
+    "dask>=2025.7.0",
+    "matplotlib>=3.10.3",
+    "pyresample>=1.34.2",
+    "pydantic>=2.11.7",
+    "satpy>=0.57.0",
+    "zarr==2.18.7",
+    "ipykernel>=6.30.0",
+    "h5netcdf>=1.6.3",
+    "pyproj (>=3.7.2,<4.0.0)",
+    "memory-profiler>=0.61.0",
 ]
 
+[dependency-groups]
+dev = [
+    "py-spy>=0.4.1",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.12"
-xarray = ">=2025.7.1,<2026.0.0"
-eumdac = ">=3.0.0,<4.0.0"
-python-dotenv = ">=1.1.1,<2.0.0"
-tqdm = "^4.67.1"
-netcdf4 = "^1.7.2"
-dask = "^2025.7.0"
-matplotlib = "^3.10.3"
-pyresample = "^1.34.2"
-pydantic = "^2.11.7"
-satpy = "^0.57.0"
-zarr = "2.18.7"
-ipykernel = "^6.30.0"
-h5netcdf = "^1.6.3"
-
-[tool.poetry.group.dev.dependencies]
-py-spy = "^0.4.1"
-
-[build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"

@@ -3,3 +3,7 @@ notebooks/
 data/
 profile.svg
 *.log
+.venv/
+.vscode/
+uv.lock
+*.txt
