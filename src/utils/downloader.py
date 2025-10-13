@@ -23,11 +23,14 @@ import xarray as xr
 from dask.diagnostics import ProgressBar
 from typing import Union
 from http.client import IncompleteRead
+import json 
 from urllib3.exceptions import ProtocolError
 from threading import Thread, Lock
 tb = ProgressBar().register()
 
 logger = logging.getLogger(__name__)
+
+
 
 """
 Part of the code has been adapted from monkey_wrench https://github.com/pkhalaj/monkey-wrench
@@ -395,7 +398,8 @@ class EUMDownloader:
 class MTGDataParallel():
     def __init__(self,
                 args:dict,  
-                downloader: EUMDownloader, 
+                downloader: EUMDownloader,
+                label:str, 
                 channels:list= ['vis_06',  'vis_08'],
                 area_reprojection:Union[None, str]=None,
                 reprojection="nearest",
@@ -431,11 +435,7 @@ class MTGDataParallel():
         self.nat_path = Path(self.output_dir) / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
-        self.zarr_lock = Lock()
-        self.netcdf_lock = Lock()  
-        self.reproj_lock = Lock()
-
-        self.download_to_zarr(args, self.file_list, initialize_dataset)
+        self.download_to_zarr(args, self.file_list, initialize_dataset, label)
 
     def _get_size(self, area_reprojection:str):
         if area_reprojection == "worldeqc3km":
@@ -450,9 +450,18 @@ class MTGDataParallel():
             return [18000, 36000]
         else: 
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
+        
+
+    def _mark_done(self, task_id: str):
+        if self.status_file.exists():
+            status = json.loads(self.status_file.read_text())
+        else:
+            status = {}
+        status[task_id] = "done"
+        self.status_file.write_text(json.dumps(status, indent=2))
 
 
-    def download_to_zarr(self, args, file_list: list, initialize_dataset: bool):
+    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str):
         from utils import ZarrStore
         t0 = time.time()
 
@@ -483,17 +492,18 @@ class MTGDataParallel():
         else:
             example_ds = None
 
-        store = ZarrStore(
-            self.output_dir,
-            size=self.size,
-            file_list=self.file_list,
-            channels=self.channels,
-            chunks=self.chunks,
-            ds=example_ds,
-            yes_flag=args.yes
-        )
-
-        if args.remove:
+        store = ZarrStore(self.output_dir, 
+                          size=self.size, 
+                          file_list=self.file_list,
+                          channels=self.channels,
+                          chunks= self.chunks,
+                          label=label,
+                          ds= example_ds,
+                          yes_flag=args.yes)
+        
+        self.status_file = Path(store.path).with_suffix(".status.json")
+        
+        if args.remove is True:
             self._remove_all_tempfiles()
 
         download_queue = queue.Queue()
@@ -891,13 +901,15 @@ class MTGDataParallel():
         debug_time_vars(ds)
 
         if zarr_path is not None:
-            with self.zarr_lock:
-                ds.to_zarr(
-                    zarr_path,
-                    # append_dim="time",
-                    region={"time": slice(t, t + 1)},
-                    compute=True
-                )
-                read_pbar.update(1)
+            ds.to_zarr(
+                zarr_path,
+                # append_dim="time",
+                region={"time": slice(t, t + 1)},
+                compute=True
+            )
+            read_pbar.update(1)
+
+            task_id = f"{t_start}_{t}"
+            self._mark_done(task_id)
         else:
             return ds
