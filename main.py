@@ -128,6 +128,10 @@ if __name__ == "__main__":
     import threading, traceback
     import dask
     import logging
+    from utils import handle_exit_signal, aggregate_status_jsons
+    from definitions import DATA_PATH
+    from pathlib import Path
+    import signal
     logger = logging.getLogger(__name__)
 
     argparser = argparse.ArgumentParser(description="MTG FCI Data Downloader")
@@ -137,6 +141,30 @@ if __name__ == "__main__":
     argparser.add_argument('-r', '--remove', action='store_true', help='Automatically confirm deletion of source files')
     argparser.add_argument("--resampler", default=os.getenv("resampler", "nearest"))
     args = argparser.parse_args()
+
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, handle_exit_signal)   # Ctrl+C
+    signal.signal(signal.SIGTERM, handle_exit_signal)  # kill command, container stop, etc.
+
+    if args.yes:
+        logger.warning(
+        "⚠️  The '-y/--yes' flag is active. Existing Zarr datasets will be deleted automatically without confirmation!"
+        )
+        print("\nDeletion will start automatically in 3 seconds. Press Ctrl+C to abort.")
+        try:
+            for i in range(3, 0, -1):
+                print(f"⏳ {i}...", end='', flush=True)
+                time.sleep(1)
+                print('\r', end='')
+        except KeyboardInterrupt:
+            print("\nOperation cancelled by user.")
+            exit(1)
+
+    
+    aggregated_json_filename = Path(DATA_PATH) / "datastore_data" / "aggregated_data.json"
+    
+    if not os.path.exists(aggregated_json_filename):
+        aggregate_status_jsons(aggregated_json_filename)
 
     if args.dask_threads > 0:
         logger.info(f"Using {args.dask_threads} dask threads")
@@ -158,6 +186,10 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Error {e}")
         logger.error(traceback.format_exc())
+        aggregate_status_jsons(aggregated_json_filename)
         raise
+    finally:
+        # Always aggregate at the end — even if no error
+        aggregate_status_jsons(aggregated_json_filename)
 
 

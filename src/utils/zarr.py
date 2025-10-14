@@ -56,6 +56,7 @@ class ZarrStore:
         if os.path.exists(zarr_path):
             if yes_flag:
                 response = 'yes'
+                
             else:
                 response = input(
                     f"The folder '{os.path.basename(zarr_path)}' already exists. Do you want to delete it? (yes/no): "
@@ -70,10 +71,11 @@ class ZarrStore:
                     raise FileExistsError(
                         f"Could not delete folder '{os.path.basename(zarr_path)}'. Please delete it manually or choose a different folder."
                     )
+            elif response == "no":
+                logger.info("The zarr store already exists, skipping its creation...")
+                return zarr_path, None
             else:
-                raise FileExistsError(
-                    f"Folder '{os.path.basename(zarr_path)}' already exists. Please choose a different folder or delete the existing one."
-                )
+                raise ValueError(f"Invalid response: '{response}'. Expected 'yes' or 'no'.")
                 
 
         # Dimensions

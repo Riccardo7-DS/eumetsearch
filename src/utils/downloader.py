@@ -9,7 +9,7 @@ import time
 import fnmatch
 import eumdac
 from typing import Literal
-import warnings
+import multiprocessing as mp
 import os
 from dotenv import load_dotenv
 import zipfile
@@ -25,6 +25,7 @@ from typing import Union
 from http.client import IncompleteRead
 import json 
 from urllib3.exceptions import ProtocolError
+import traceback
 from threading import Thread, Lock
 tb = ProgressBar().register()
 
@@ -173,10 +174,12 @@ class EUMDownloader:
 
             current_date += timedelta(days=1)
 
-        for i, (start, end) in enumerate(intervals, 1):
+        return intervals
+    
+    def log_intervals(self):
+        for i, (start, end) in enumerate(self.intervals, 1):
             logger.info(f"{i:03d}. Start: {start:%Y-%m-%d %H:%M:%S} -> End: {end:%Y-%m-%d %H:%M:%S}")
 
-        return intervals
     
     @validate_call
     def _split_intervals_for_threading(self, time_intervals: list[tuple[datetime, datetime]], n_threads: int):
@@ -250,18 +253,29 @@ class EUMDownloader:
 
         self.start_date = start_time
         self.end_date = end_time
-        self.file_list = self._collect_products(self.intervals, bounding_box)
+        self._method = method
+        self._bounding_box = bounding_box
 
-        if method == "datatailor":
+    def initiate_download(self, aggregated_file = None):
+
+        if os.path.isfile(aggregated_file):
+            from utils import JsonDataResponse
+            collected_data = JsonDataResponse(aggregated_file) 
+            self.intervals = collected_data.files_exclusion(self.intervals)
+
+        self.log_intervals()
+        self.file_list = self._collect_products(self.intervals, self._bounding_box)
+
+        if self._method == "datatailor":
             self._datatailor_download(
                 self.file_list,
-                bounding_box=bounding_box,
+                bounding_box=self._bounding_box,
             )
 
-        elif method == "datastore":
+        elif self._method == "datastore":
             self.chunks_download(
                 self.file_list, 
-                bounding_box
+                self._bounding_box
             )
             
             
@@ -411,9 +425,9 @@ class MTGDataParallel():
         
         
         from utils import compute_auto_chunks
+        from definitions import DATA_PATH
 
 
-        self.file_list = downloader.file_list
         self.output_dir = downloader.output_dir
         self.size = self._get_size(area_reprojection)
         self._reproject = area_reprojection
@@ -428,7 +442,7 @@ class MTGDataParallel():
         
         assert all(f in channelsIR or f in channelsVIS for f in channels), \
            "One or more channels are not in channelsIR or channelsVIS"
-        logger.info("The initialized class contains {} files".format(len(self.file_list)))
+        
         self.channels = channels
         self.zip_path = Path(self.output_dir) / "zipfolder"
         os.makedirs(self.zip_path, exist_ok=True)
@@ -438,6 +452,10 @@ class MTGDataParallel():
         self.zarr_lock = Lock()
         self.nectdf_lock = Lock()
 
+        downloader.initiate_download(aggregated_file=Path(DATA_PATH) / "datastore_data"/ "aggregated_data.json")
+
+        self.file_list = downloader.file_list
+        logger.info("The initialized class contains {} files".format(len(self.file_list)))
         self.download_to_zarr(args, self.file_list, initialize_dataset, label)
 
     def _get_size(self, area_reprojection:str):
@@ -476,7 +494,7 @@ class MTGDataParallel():
         if initialize_dataset:
             t = 0
             filename = self._download_file(product=self.file_list[t], t=t)
-            example_ds = self.read_convert_append(filename=filename, t=t)
+            example_ds = self.read_convert_append_catch(filename=filename, t=t)
 
             example_ds = example_ds.assign_attrs(
                 chunks=self.chunks,
@@ -515,12 +533,13 @@ class MTGDataParallel():
 
         # --- Conditional threading mode ---
         if getattr(args, "threading", False):  # Only use threading if args.threading is True
-            reader_thread = Thread(target=self.read_convert_append, args=(download_queue, read_pbar, store.path))
+            logger.info("Starting read_convert_append with error catching in separate threads.")
+            reader_thread = Thread(target=self.read_convert_append_catch, args=(download_queue, read_pbar, store.path))
             reader_thread.start()
             use_threading = True
         else:
             use_threading = False
-            logger.info("Running read_convert_append sequentially (no threading).")
+            logger.info("Running read_convert_append with error catching sequentially (no threading).")
 
         # --- Parallel download ---
         with ThreadPoolExecutor(max_workers=self.processes) as executor:
@@ -540,7 +559,7 @@ class MTGDataParallel():
             # Read sequentially if no threading
             for t, product in enumerate(self.file_list):
                 filename = self._download_file(product, t)
-                self.read_convert_append(filename=filename, t=t, zarr_path=store.path)
+                self.read_convert_append_catch(filename=filename, t=t, zarr_path=store.path)
                 read_pbar.update(1)
 
         if args.remove:
@@ -809,7 +828,63 @@ class MTGDataParallel():
             if convert_datetime:
                 return datetime.strptime(matches[1], "%Y%m%d%H%M%S")   
             else:
-                return matches[1] 
+                return matches[1]
+
+    def read_convert_append_catch(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None, t=None):
+        """
+        Read, convert, and append data to Zarr store.
+        Segfault-safe: if a segmentation fault occurs inside pyresample/Satpy,
+        the function continues with the next file gracefully.
+        """
+
+        def _process_in_subprocess(filename, t, product):
+            """Run the file processing logic in an isolated subprocess."""
+            q = mp.Queue()
+            p = mp.Process(target=self._safe_runner, args=(q, self._process_single_file, filename, t, product, read_pbar, zarr_path))
+            p.start()
+            p.join()
+
+            if p.exitcode == 0:
+                if not q.empty():
+                    status, data = q.get()
+                    if status == "success":
+                        return data
+                    else:
+                        logger.error(f"Exception during processing:\n{data}")
+                        return None
+                else:
+                    logger.warning("No output received from subprocess.")
+                    return None
+            elif p.exitcode == -11:  # segmentation fault
+                logger.warning(f"Segmentation fault while processing {filename}, skipping it.")
+                return None
+            else:
+                logger.warning(f"Subprocess for {filename} exited with code {p.exitcode}.")
+                return None
+
+        # --- Single-file mode ---
+        if download_queue is None:
+            if filename is None:
+                raise ValueError("Filename must be provided when not using a download queue.")
+            if t is None:
+                raise ValueError("Time index 't' must be provided when not using a download queue.")
+
+            product = self.file_list[t]
+            ds = _process_in_subprocess(filename, t, product)
+            return ds
+
+        # --- Queue-based threaded mode ---
+        while True:
+            item = download_queue.get()
+            try:
+                if item[0] is None:  # Sentinel value to stop thread
+                    break
+                filename, t, product = item[:3]
+                _process_in_subprocess(filename, t, product)
+            finally:
+                download_queue.task_done()
+                if read_pbar:
+                    read_pbar.update(1) 
     
     def read_convert_append(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None,  t=None):
         """
@@ -846,6 +921,14 @@ class MTGDataParallel():
                 self._process_single_file(filename, t, product, read_pbar, zarr_path)
             finally:
                 download_queue.task_done()
+
+    def _safe_runner(self, q, func, *args, **kwargs):
+        """Run a function and communicate results or exceptions back to parent."""
+        try:
+            result = func(*args, **kwargs)
+            q.put(("success", result))
+        except Exception:
+            q.put(("error", traceback.format_exc()))
 
     def _extract_netcdf_files(self, filename, natfolder_t):
         with zipfile.ZipFile(filename) as zf:
@@ -902,7 +985,6 @@ class MTGDataParallel():
             ds = ds.drop_vars(["lat", "lon"])
 
         debug_time_vars(ds)
-
         
         if zarr_path is not None:
             with self.nectdf_lock:

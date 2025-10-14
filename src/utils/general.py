@@ -10,13 +10,142 @@ from glob import glob
 from typing import TypeVar, Literal
 from pydantic import validate_call
 from datetime import UTC
+from pathlib import Path
 import numpy as np 
-import pyproj 
+import json
+
 T = TypeVar("T")
 from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
+
+
+def handle_exit_signal(signum, frame):
+    """Handle SIGINT/SIGTERM gracefully."""
+    logger.warning(f"Received signal {signum}. Aggregating status files before exit...")
+    aggregate_status_jsons()
+    exit(1)
+
+
+class JsonDataResponse():
+    def __init__(self, file_path: str | Path):
+        self._status_data = self.load_status_json(file_path)
+
+    def files_exclusion(self, my_files:list):
+        done_timestamps = self.extract_done_timestamps(self._status_data)
+        self.missing_files = self.exclude_done_files(my_files, done_timestamps)
+        return self.missing_files
+
+    def extract_done_timestamps(self, status_data: dict) -> set[datetime]:
+        """
+        Extract unique timestamps (to minute resolution) from aggregated status data.
+
+        Example output:
+            {datetime.datetime(2025, 5, 2, 9, 0), datetime.datetime(2025, 6, 1, 10, 15)}
+        """
+        timestamps = set()
+
+        for key in status_data.keys():
+            try:
+                # Extract the ISO timestamp part before the underscore
+                ts = key.split("_")[0]
+                # Remove fractional seconds if present
+                ts = ts.split(".")[0]
+                # Parse into datetime
+                dt = datetime.fromisoformat(ts)
+                # Truncate to the minute (drop seconds & microseconds)
+                dt = dt.replace(second=0, microsecond=0)
+                timestamps.add(dt)
+            except Exception:
+                continue
+
+        return timestamps
+
+    def exclude_done_files(self, my_files: list[list], done_timestamps: set[datetime]) -> list[list]:
+        """
+        Exclude entries from my_files if their first element (datetime) is in done_timestamps.
+    
+        Parameters
+        ----------
+        my_files : list of lists/tuples
+            Each element should be [datetime, filename] (or similar).
+        done_timestamps : set of datetime.datetime
+            Timestamps to exclude.
+    
+        Returns
+        -------
+        list of lists
+            Filtered my_files.
+        """
+        filtered = [item for item in my_files if item[0] not in done_timestamps]
+        return filtered
+
+    def load_status_json(self, json_path: str | Path) -> dict:
+        """
+        Load a status JSON file (e.g., aggregated_status.json).
+        Parameters
+        ----------
+        json_path : str or Path
+            Path to the JSON file.
+        Returns
+        -------
+        dict
+            Dictionary with entries like {timestamp_key: status}.
+            Returns an empty dict if the file does not exist or cannot be parsed.
+        """
+        json_path = Path(json_path)
+        if not json_path.exists():
+            logger.warning(f"Status file not found: {json_path}")
+            return {}
+        try:
+            with open(json_path, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(f"Malformed status file: {json_path} (expected dict)")
+                return {}
+            logger.info(f"Loaded {len(data)} status entries from {json_path}")
+            return data
+        except json.JSONDecodeError as e:
+            logger.error(f"Error parsing JSON in {json_path}: {e}")
+        except Exception as e:
+            logger.error(f"Error loading status file {json_path}: {e}")
+        return {}
+
+
+def aggregate_status_jsons(AGGREGATED_FILE):
+    from definitions import DATA_PATH
+    """Aggregate all .status.json files into a flat {timestamp_key: status} dictionary."""
+    aggregated = {}
+
+    data_dir = Path(os.path.dirname(AGGREGATED_FILE))
+
+    if not data_dir.exists():
+        logger.warning(f"No datastore directory found at {data_dir}")
+        return
+
+    for status_file in data_dir.glob("*.status.json"):
+        try:
+            with open(status_file, "r") as f:
+                data = json.load(f)
+
+            # Expecting each JSON to have structure like { "2025-05-02T09:00:07.000000000_5": "done", ... }
+            # Merge into flat dict
+            if isinstance(data, dict):
+                aggregated.update(data)
+            else:
+                logger.warning(f"Ignoring malformed file {status_file}: not a dict")
+
+        except Exception as e:
+            logger.warning(f"Could not read {status_file}: {e}")
+
+    if aggregated:
+        with open(AGGREGATED_FILE, "w") as f:
+            json.dump(aggregated, f, indent=2)
+        logger.info(f"✅ Aggregated {len(aggregated)} entries into {AGGREGATED_FILE}")
+    else:
+        logger.info("No valid .status.json files found to aggregate.")
+
 
 
 @contextmanager
