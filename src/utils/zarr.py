@@ -32,7 +32,7 @@ class ZarrStore:
         self._num_xchunks = chunks.get("lon", size[1])
         self._n_workers = n_workers
 
-        zarr_path , encoding = self.zarr_store_create(
+        zarr_path = self.zarr_store_create(
             label=label, 
             channels=channels, 
             size=size,
@@ -56,6 +56,9 @@ class ZarrStore:
         if os.path.exists(zarr_path):
             if yes_flag:
                 response = 'yes'
+
+            elif not yes_flag:
+                response = "no"
                 
             else:
                 response = input(
@@ -73,7 +76,7 @@ class ZarrStore:
                     )
             elif response == "no":
                 logger.info("The zarr store already exists, skipping its creation...")
-                return zarr_path, None
+                return zarr_path
             else:
                 raise ValueError(f"Invalid response: '{response}'. Expected 'yes' or 'no'.")
                 
@@ -117,6 +120,11 @@ class ZarrStore:
             data_vars[var] = (dims, da.full(shape, fill_value, dtype=dtype, chunks=chunks))
             encoding[var] = {"compressor": compressor, 
                              "chunks": chunks}
+            
+
+        filled_flag = da.zeros((num_time,), dtype=bool, chunks=(self._num_timechunks,))
+        data_vars["filled_flag"] = (("time",), filled_flag)
+        encoding["filled_flag"] = {"compressor": compressor, "chunks": (self._num_timechunks,)}
     
         ds_empty = xr.Dataset(data_vars=data_vars, coords={"time": time_coord})
 
@@ -130,7 +138,7 @@ class ZarrStore:
 
         ds_empty.to_zarr(zarr_path, mode='w', compute=False, consolidated=True)
 
-        return zarr_path, encoding
+        return zarr_path
 
 
 def compute_auto_chunks(shape, dtype_size=4, fixed_chunks={"time": 1}, target_chunk_bytes=128 * 2**20):

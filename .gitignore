@@ -7,3 +7,4 @@ profile.svg
 .vscode/
 uv.lock
 *.txt
+src/__pycache__/

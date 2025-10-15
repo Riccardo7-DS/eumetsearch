@@ -222,7 +222,7 @@ class EUMDownloader:
                           start_time, 
                           end_time, 
                           bounding_box:list=None, 
-                          method:Literal[None, "datatailor", "datastore"]=None,
+                          method:Literal[None, "datatailor", "datastore"]= None,
                           observations_per_day=1, 
                           start_hour=12, 
                           interval_minutes=10,
@@ -524,7 +524,7 @@ class MTGDataParallel():
         
         self.status_file = Path(store.path).with_suffix(".status.json")
         
-        if args.remove:
+        if not args.remove:
             self._remove_all_tempfiles()
 
         download_queue = queue.Queue()
@@ -562,8 +562,6 @@ class MTGDataParallel():
                 self.read_convert_append_catch(filename=filename, t=t, zarr_path=store.path)
                 read_pbar.update(1)
 
-        if args.remove:
-            self._remove_all_tempfiles()
 
         elapsed_seconds = time.time() - t0
         hours = int(elapsed_seconds // 3600)
@@ -576,6 +574,7 @@ class MTGDataParallel():
            file_path = os.path.join(self.nat_path, filename)
            if os.path.isfile(file_path):
               os.remove(file_path)
+
         for filename in os.listdir(self.zip_path):
            file_path = os.path.join(self.zip_path, filename)
            if os.path.isfile(file_path):
@@ -930,11 +929,68 @@ class MTGDataParallel():
         except Exception:
             q.put(("error", traceback.format_exc()))
 
-    def _extract_netcdf_files(self, filename, natfolder_t):
+    def _extract_netcdf_files(self, filename, natfolder_t, remove_zip:bool=True):
         with zipfile.ZipFile(filename) as zf:
             for fnat in zf.namelist():
                 if fnat.endswith('.nc'):
                     zf.extract(fnat, natfolder_t)
+        if remove_zip:
+            os.remove(filename)
+
+
+    def _safe_write_to_zarr(ds_new, zarr_path, t, lock):
+        """
+        Safely writes ds_new to zarr_path at time index t, skipping if already filled.
+
+        Parameters
+        ----------
+        ds_new : xarray.Dataset
+            Dataset to write for a single time index (shape [time=1, ...]).
+        zarr_path : str
+            Path to existing zarr store.
+        t : int
+            Time index to write to.
+        lock : threading.Lock or multiprocessing.Lock
+            Lock to ensure safe concurrent writes.
+        main_var : str
+            Name of the primary data variable to inspect or log (e.g., "ir_105").
+        """
+        with lock:
+            # Open lazily (fast)
+            store = xr.open_zarr(zarr_path, consolidated=True)
+
+            # Load the filled_flag lazily, then to NumPy
+            filled = store["filled_flag"].load().values
+
+            # Find first unfilled index
+            unfilled_indices = np.where(~filled)[0]
+
+            if len(unfilled_indices) == 0:
+                logger.info("[done] All timesteps already filled.")
+                return None
+
+            t = int(unfilled_indices[0])
+
+            # Write data slice
+            ds_new.to_zarr(
+                zarr_path,
+                region={"time": slice(t, t + 1)},
+                compute=True
+            )
+
+            # Update flag to True
+            flag_update = xr.Dataset(
+                {"filled_flag": (("time",), np.array([True], dtype=bool))},
+                coords={"time": [store.time.isel(time=t).item()]}
+            )
+            flag_update.to_zarr(
+                zarr_path,
+                region={"time": slice(t, t + 1)},
+                compute=True
+            )
+
+            return t  # return which index was written for logging/debug
+
 
 
     def _process_single_file(self, filename, t, product, read_pbar=None, zarr_path=None):
@@ -987,16 +1043,11 @@ class MTGDataParallel():
         debug_time_vars(ds)
         
         if zarr_path is not None:
-            with self.nectdf_lock:
-                ds.to_zarr(
-                    zarr_path,
-                    # append_dim="time",
-                    region={"time": slice(t, t + 1)},
-                    compute=True
-                )
-                read_pbar.update(1)
-
-                task_id = f"{t_start}_{t}"
-                self._mark_done(task_id)
+            self._safe_write_to_zarr(zarr_path, t, self.nectdf_lock)
+            read_pbar.update(1)
+            task_id = f"{t_start}_{t}"
+            self._mark_done(task_id)
+                
+            os.remove(natfolder_t)
         else:
             return ds

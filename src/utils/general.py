@@ -21,10 +21,10 @@ from contextlib import contextmanager
 logger = logging.getLogger(__name__)
 
 
-def handle_exit_signal(signum, frame):
+def handle_exit_signal(signum, frame, aggregated_file):
     """Handle SIGINT/SIGTERM gracefully."""
     logger.warning(f"Received signal {signum}. Aggregating status files before exit...")
-    aggregate_status_jsons()
+    aggregate_status_jsons(aggregated_file)
     exit(1)
 
 

@@ -3,71 +3,75 @@ from dotenv import load_dotenv
 from utils import products_list
 from utils import EUMDownloader, bbox_mtg, init_logging, MTGDataParallel
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 import calendar
 from memory_profiler import profile
 
-def main_monthly(args, start_date, end_date):
+def main_batched(args, start_date, end_date, n_days=10):
     logger = init_logging("./logger_mtg_fci.log", verbose=False)
-    cpus = os.cpu_count()
-    
-    # Load environment variables from .env file
     load_dotenv()
-    
+
     product_id = products_list["MTG-1"]["product_id"]
-    
-    # Define bounding box
     bbox = bbox_mtg()
-    W, S, E, N = bbox[0], bbox[1], bbox[2], bbox[3]
+    W, S, E, N = bbox
     NSWE = [N, S, W, E]
-    
-    # Initialize downloader once
+
     downloader = EUMDownloader(
-        product_id=product_id, 
+        product_id=product_id,
         output_dir="./data/datastore_data",
         max_parallel_conns=10,
     )
-    
-    # Convert start/end dates to datetime objects
+
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
     current = start
 
     while current <= end:
-        # Compute last day of current month
-        last_day = calendar.monthrange(current.year, current.month)[1]
-        month_end = current.replace(day=last_day, hour=23, minute=59, second=59)
+        # Define month boundaries
+        year, month = current.year, current.month
+        last_day = calendar.monthrange(year, month)[1]
+        month_end = datetime(year, month, last_day, 23, 59, 59)
         if month_end > end:
             month_end = end
-        
-        # Download data for this month
-        logger.info(f"Downloading data for {current.strftime('%Y-%m')}")
-        downloader.download_interval(
-            start_time=current.isoformat(), 
-            end_time=month_end.isoformat(),
-            bounding_box=NSWE, 
-            observations_per_day=5,
-            jump_minutes=60,
-            start_hour=int(start.hour)
-        )
-        
-        # Create MTGDataParallel object with a unique label for the month
-        label = f"mtg_{current.year}_{current.month:02d}"
-        logger.info(f"Processing MTGDataParallel for {label}")
-        MTGDataParallel(
-            args, 
-            downloader, 
-            area_reprojection="mtg_fci_latlon_1km",
-            reprojection=args.resampler,
-            chunks={"time": 10, "lat": 500, "lon": 500},
-            label=label
-        )
-        
-        # Move to first day of next month
-        if current.month == 12:
-            current = current.replace(year=current.year + 1, month=1, day=1)
+
+        label = f"mtg_{year}_{month:02d}"
+        logger.info(f"Collecting data to data store {label}")
+
+        batch_start = current
+        while batch_start <= month_end:
+            batch_end = min(batch_start + timedelta(days=n_days - 1, hours=23, minutes=59, seconds=59), month_end)
+            logger.info(f"Downloading data for batch {batch_start.date()} → {batch_end.date()}")
+
+            # 1️⃣ Download data for this batch
+            downloader.download_interval(
+                start_time=batch_start.isoformat(),
+                end_time=batch_end.isoformat(),
+                bounding_box=NSWE,
+                observations_per_day=5,
+                jump_minutes=60,
+                start_hour=int(start.hour)
+            )
+
+            # 2️⃣ Process the downloaded data for this batch (month-level Zarr)
+            # logger.info(f"Processing data for {label} ({batch_start.date()} → {batch_end.date()})")
+            MTGDataParallel(
+                args,
+                downloader,
+                area_reprojection="mtg_fci_latlon_1km",
+                reprojection=args.resampler,
+                chunks={"time": 1, "lat": 500, "lon": 500},
+                label=label,
+            )
+
+            batch_start = batch_end + timedelta(seconds=1)
+
+        logger.info(f"Finished processing for {label}")
+
+        # Move to next month
+        if month == 12:
+            current = current.replace(year=year + 1, month=1, day=1)
         else:
-            current = current.replace(month=current.month + 1, day=1)
+            current = current.replace(month=month + 1, day=1)
 
 @profile
 def main(args, start_date, end_date):
@@ -128,6 +132,7 @@ if __name__ == "__main__":
     import threading, traceback
     import dask
     import logging
+    from functools import partial
     from utils import handle_exit_signal, aggregate_status_jsons
     from definitions import DATA_PATH
     from pathlib import Path
@@ -142,9 +147,7 @@ if __name__ == "__main__":
     argparser.add_argument("--resampler", default=os.getenv("resampler", "nearest"))
     args = argparser.parse_args()
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, handle_exit_signal)   # Ctrl+C
-    signal.signal(signal.SIGTERM, handle_exit_signal)  # kill command, container stop, etc.
+
 
     if args.yes:
         logger.warning(
@@ -162,7 +165,11 @@ if __name__ == "__main__":
 
     
     aggregated_json_filename = Path(DATA_PATH) / "datastore_data" / "aggregated_data.json"
-    
+
+        # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, partial(handle_exit_signal, aggregated_file=aggregated_json_filename))
+    signal.signal(signal.SIGTERM, partial(handle_exit_signal, aggregated_file=aggregated_json_filename))
+
     if not os.path.exists(aggregated_json_filename):
         aggregate_status_jsons(aggregated_json_filename)
 
@@ -173,14 +180,14 @@ if __name__ == "__main__":
         logger.info("Using single dask scheduler")
         dask.config.set(scheduler="single-threaded")
 
-    start_date = "2025-05-01T09:00:00"
+    start_date = "2025-06-01T09:00:00"
     end_date = "2025-10-13T09:30:00"
 
     try:
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_monthly(args, start_date, end_date)
+        main_batched(args, start_date, end_date, n_days=10)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:
