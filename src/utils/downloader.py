@@ -938,7 +938,7 @@ class MTGDataParallel():
             os.remove(filename)
 
 
-    def _safe_write_to_zarr(ds_new, zarr_path, t, lock):
+    def _safe_write_to_zarr(self, ds_new, zarr_path, t, lock):
         """
         Safely writes ds_new to zarr_path at time index t, skipping if already filled.
 
@@ -957,7 +957,7 @@ class MTGDataParallel():
         """
         with lock:
             # Open lazily (fast)
-            store = xr.open_zarr(zarr_path, consolidated=True)
+            store = xr.open_zarr(zarr_path, consolidated=False)
 
             # Load the filled_flag lazily, then to NumPy
             filled = store["filled_flag"].load().values

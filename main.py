@@ -187,7 +187,7 @@ if __name__ == "__main__":
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=10)
+        main_batched(args, start_date, end_date, n_days=1)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:
