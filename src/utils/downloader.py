@@ -1043,7 +1043,7 @@ class MTGDataParallel():
         debug_time_vars(ds)
         
         if zarr_path is not None:
-            self._safe_write_to_zarr(zarr_path, t, self.nectdf_lock)
+            self._safe_write_to_zarr(ds, t, self.nectdf_lock)
             read_pbar.update(1)
             task_id = f"{t_start}_{t}"
             self._mark_done(task_id)
