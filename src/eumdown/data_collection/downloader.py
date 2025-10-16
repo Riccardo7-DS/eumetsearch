@@ -509,15 +509,25 @@ class ZarrExport():
         self.status_file.write_text(json.dumps(status, indent=2))
 
 
-    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str, custom_size: dict | None = None):
+    def download_to_zarr(self, args, file_list: list, initialize_dataset: bool, label: str, custom_size: dict | None = None):
         from utils import ZarrStore
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from tqdm import tqdm
+        import numpy as np
+        from pathlib import Path
+        import logging
+
+        logger = logging.getLogger(__name__)
         t0 = time.time()
 
+        # --- Sort files by date
         file_list = sorted(
             self.file_list,
             key=lambda p: np.datetime64(p._browse_properties['date'].split('/')[0][0:-1])
         )
 
+        # --- Initialize dataset if needed
         if initialize_dataset:
             t = 0
             filename = self._download_file(product=self.file_list[t], t=t)
@@ -540,61 +550,63 @@ class ZarrExport():
         else:
             example_ds = None
 
-        store = ZarrStore(self.output_dir, 
-                          size=self.size, 
-                          file_list=self.file_list,
-                          channels=self.channels,
-                          chunks= self.chunks,
-                          label=label,
-                          ds= example_ds,
-                          custom_size=custom_size,
-                          remove_flag=args.yes)
-        
+        # --- Initialize Zarr store
+        store = ZarrStore(
+            self.output_dir,
+            size=self.size,
+            file_list=self.file_list,
+            channels=self.channels,
+            chunks=self.chunks,
+            label=label,
+            ds=example_ds,
+            custom_size=custom_size,
+            remove_flag=args.yes
+        )
+
         self.status_file = Path(store.path).with_suffix(".status.json")
-        
+
         if not args.remove:
             self._remove_all_tempfiles()
 
-        download_queue = queue.Queue()
-        read_pbar = tqdm(total=len(self.file_list), desc="Reading files", position=1, leave=True)
-        download_pbar = tqdm(total=len(self.file_list), desc="Downloading files", position=0, leave=True)
+        # --- Parallel downloads
+        logger.info("Starting parallel downloads...")
+        download_pbar = tqdm(total=len(file_list), desc="Downloading files", position=0, leave=True)
 
-        # --- Conditional threading mode ---
-        if getattr(args, "threading", False):  # Only use threading if args.threading is True
-            logger.info("Starting read_convert_append with error catching in separate threads.")
-            reader_thread = Thread(target=self.read_convert_append_catch, args=(download_queue, read_pbar, store.path))
-            reader_thread.start()
-            use_threading = True
-        else:
-            use_threading = False
-            logger.info("Running read_convert_append with error catching sequentially (no threading).")
-
-        # --- Parallel download ---
+        filenames = [None] * len(file_list)
         with ThreadPoolExecutor(max_workers=self.processes) as executor:
-            futures = [executor.submit(self._download_file, self.file_list[t], t, download_queue)
-                       for t in range(len(file_list))]
-            for _ in as_completed(futures):
-                download_pbar.update(1)
-            for f in futures:
-                f.result()
+            futures = {
+                executor.submit(self._download_file, self.file_list[t], t, None): t
+                for t in range(len(file_list))
+            }
+            for future in as_completed(futures):
+                t = futures[future]
+                try:
+                    filenames[t] = future.result()
+                    download_pbar.update(1)
+                except Exception as e:
+                    logger.error(f"Error downloading file {t}: {e}")
+        download_pbar.close()
 
-        # --- Stop reader thread or run sequentially ---
-        if use_threading:
-            for _ in range(self.processes):
-                download_queue.put((None, None, None, None))
-            reader_thread.join()
-        else:
-            # Read sequentially if no threading
-            for t, product in enumerate(self.file_list):
-                filename = self._download_file(product, t)
+        logger.info("All downloads completed. Starting processing phase...")
+
+        # --- Sequential reading/conversion after downloads complete
+        read_pbar = tqdm(total=len(file_list), desc="Reading files", position=1, leave=True)
+        for t, filename in enumerate(filenames):
+            if filename is None:
+                logger.warning(f"Skipping missing file {t}.")
+                continue
+            try:
                 self.read_convert_append_catch(filename=filename, t=t, zarr_path=store.path)
                 read_pbar.update(1)
+            except Exception as e:
+                logger.error(f"Error reading/processing file {filename}: {e}")
+        read_pbar.close()
 
-
+        # --- Done
         elapsed_seconds = time.time() - t0
         hours = int(elapsed_seconds // 3600)
         minutes = int((elapsed_seconds % 3600) // 60)
-        logger.info(f"Done in {hours} hours {minutes} minutes")
+        logger.info(f"✅ Done in {hours} hours {minutes} minutes.")
 
     def _remove_all_tempfiles(self):
         import os

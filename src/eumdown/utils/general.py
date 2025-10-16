@@ -201,7 +201,8 @@ def extract_custom_area(area_name:str, file:str):
         )
 
 
-def load_zarr_preprocess(path:str, channels=["vis_06", "vis_08"]) -> xr.Dataset:
+def load_zarr_preprocess(path:str) -> xr.Dataset:
+    from definitions import ROOT_DIR
     """
     Load a preprocessed zarr file.
     """
@@ -210,7 +211,10 @@ def load_zarr_preprocess(path:str, channels=["vis_06", "vis_08"]) -> xr.Dataset:
     
     # Open the zarr dataset
     ds = xr.open_zarr(path, decode_times=False).chunk("auto")
-    area = extract_custom_area("mtg_fci_latlon_1km", "../src/utils/areas.yaml")
+
+    yaml_path = os.path.join(ROOT_DIR, "src/eumdown/utils/areas.yaml")
+
+    area = extract_custom_area("mtg_fci_latlon_1km", yaml_path)
     lons_2d, lats_2d = area.get_lonlats()
     lon_1d = lons_2d[0, :]
     lat_1d = lats_2d[:, 0] 
