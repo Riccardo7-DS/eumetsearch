@@ -239,7 +239,7 @@ class EUMDownloader:
                           jump_minutes=0
         ):
 
-        from utils import assert_datetime_is_timezone_aware, assert_start_precedes_end
+        from eumetsearch import assert_datetime_is_timezone_aware, assert_start_precedes_end
 
         """Download products from the datastore."""
         logger.info(f"Downloading {self.product_id} from {start_time} to {end_time}...")
@@ -269,7 +269,7 @@ class EUMDownloader:
     def initiate_download(self, aggregated_file = None):
 
         if os.path.isfile(aggregated_file):
-            from utils import JsonDataResponse
+            from eumetsearch import JsonDataResponse
             collected_data = JsonDataResponse(aggregated_file) 
             self.intervals = collected_data.files_exclusion(self.intervals)
 
@@ -451,7 +451,7 @@ class ZarrExport():
         
         
         
-        from utils import compute_auto_chunks
+        from eumetsearch import compute_auto_chunks
         from definitions import DATA_PATH
 
 
@@ -510,7 +510,7 @@ class ZarrExport():
 
 
     def download_to_zarr(self, args, file_list: list, initialize_dataset: bool, label: str, custom_size: dict | None = None):
-        from utils import ZarrStore
+        from eumetsearch import ZarrStore
         import time
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from tqdm import tqdm
@@ -769,11 +769,8 @@ class ZarrExport():
         return warped_array
     
     def _resample_pyresample(self, scn):
-        from pyresample import create_area_def
-        from pyproj import CRS
-        from utils import extract_custom_area
-
-        area_def = extract_custom_area(self._reproject, "./src/utils/areas.yaml")
+        from eumetsearch import extract_custom_area
+        area_def = extract_custom_area(self._reproject, "./src/eumetsearch/utils/areas.yaml")
         return scn.resample(area_def, radius_of_influence=5000, resampler=self._reprojection)
     
     def _dataset_reproject_loop(self, scn):
@@ -814,7 +811,7 @@ class ZarrExport():
         import warnings, numpy as np
         from satpy.scene import Scene
         from satpy import find_files_and_readers
-        from utils import single_thread_env
+        from eumetsearch import single_thread_env
 
         # -------------------------------------------------------------
         # Load Satpy scene
@@ -1056,7 +1053,7 @@ class ZarrExport():
         - zarr_path: Path to Zarr store (optional)
         """
 
-        from utils import debug_time_vars
+        from eumetsearch import debug_time_vars
 
         # file_n = self._extract_datetime(filename)
         natfolder_t = os.path.join(self.nat_path, str(t))

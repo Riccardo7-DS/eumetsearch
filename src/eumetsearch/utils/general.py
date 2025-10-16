@@ -13,7 +13,6 @@ from datetime import UTC
 from pathlib import Path
 import numpy as np 
 import json
-
 T = TypeVar("T")
 from contextlib import contextmanager
 
@@ -212,7 +211,7 @@ def load_zarr_preprocess(path:str) -> xr.Dataset:
     # Open the zarr dataset
     ds = xr.open_zarr(path, decode_times=False).chunk("auto")
 
-    yaml_path = os.path.join(ROOT_DIR, "src/eumdown/utils/areas.yaml")
+    yaml_path = os.path.join(ROOT_DIR, "src/eumetsearch/utils/areas.yaml")
 
     area = extract_custom_area("mtg_fci_latlon_1km", yaml_path)
     lons_2d, lats_2d = area.get_lonlats()
@@ -235,7 +234,7 @@ def load_zarr_preprocess(path:str) -> xr.Dataset:
 
 
 def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):
-    from utils import bbox_mtg
+    from eumetsearch import bbox_mtg
     # Approximate 1 km resolution in degrees (at equator)
     # ~1.1 km at equator
     if full_grid:

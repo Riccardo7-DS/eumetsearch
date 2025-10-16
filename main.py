@@ -1,7 +1,7 @@
 import os 
 from dotenv import load_dotenv
-from utils import products_list
-from utils import EUMDownloader, bbox_mtg, init_logging, ZarrExport
+from eumetsearch import products_list
+from eumetsearch import EUMDownloader, bbox_mtg, init_logging, ZarrExport
 import argparse
 from datetime import datetime, timedelta
 import calendar
@@ -135,7 +135,7 @@ if __name__ == "__main__":
     import dask
     import logging
     from functools import partial
-    from utils import handle_exit_signal, aggregate_status_jsons
+    from eumetsearch import handle_exit_signal, aggregate_status_jsons
     from definitions import DATA_PATH
     from pathlib import Path
     import signal
@@ -189,7 +189,7 @@ if __name__ == "__main__":
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=10)
+        main_batched(args, start_date, end_date, n_days=2)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:
