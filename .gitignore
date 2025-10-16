@@ -8,3 +8,5 @@ profile.svg
 uv.lock
 *.txt
 src/__pycache__/
+dist/
+src/eumetsearch.egg-info/

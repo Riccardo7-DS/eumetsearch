@@ -1,7 +1,7 @@
 [project]
-name = "mtg-fci-query"
+name = "eumetsearch"
 version = "0.1.0"
-description = "Package to download data from MTG FCI"
+description = "Package to download and reproject to regular grid data from MTG/MSG FCI"
 authors = [
   { name = "Riccardo D’Ercole" }
 ]

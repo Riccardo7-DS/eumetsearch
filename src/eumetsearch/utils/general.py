@@ -310,37 +310,6 @@ def init_logging(log_file:str=None, verbose:bool=False)-> logging.Logger:
     return logger
 
 
-def ndvi_colormap(colormap: Literal["diverging","sequential"]):
-    from  matplotlib.colors import ListedColormap, BoundaryNorm, LinearSegmentedColormap
-
-
-    if colormap == "diverging":
-
-        # List of corresponding colors in hexadecimal format (reversed order)
-        cols = [
-            "#c0c0c0",
-            "#954535",
-            "#FF0000",
-            "#E97451",
-            "#FFA500",
-            "#FFD700",
-            "#DFFF00",
-            "#CCFF00",
-            "#00FF00",
-            "#00BB00",
-            "#008800",
-            "#006600",
-            "#7F00FF"
-        ]
-
-    elif colormap == "sequential":
-        cols = ["#ffffe5","#f7fcb9","#d9f0a3","#addd8e","#78c679","#41ab5d",
-                "#238443","#006837","#004529"]
-
-    cmap_custom = ListedColormap(cols)
-    return cmap_custom
-
-
 def debug_time_vars(ds, vars_to_check=("timeStart", "timeEnd", "identifier"), n_preview=5):
     """
     Print dtype, shape, and sample values of time-related variables in an xarray Dataset.
@@ -528,13 +497,6 @@ def load_clean_xarray_dataset(path_pattern: str) -> xr.Dataset:
         raise RuntimeError("No valid NetCDF files could be opened.")
     
 
-import xarray as xr
-import numpy as np
-import pandas as pd
-import logging
-
-logger = logging.getLogger(__name__)
-
 def convert_mtg_fci_with_offsets(ds: xr.Dataset, selected_channels=["vis_06", "vis_08"]) -> xr.Dataset:
     """
     Convert an MTG FCI Level 1C dataset with body chunks and index offsets
@@ -663,48 +625,3 @@ def ndvi_colormap(colormap: Literal["diverging","sequential"]):
 
     cmap_custom = ListedColormap(cols)
     return cmap_custom
-
-
-
-# _original_cos = np.cos
-# _original_sin = np.sin
-
-def debug_cos(x):
-    arr = np.asarray(x)
-    bad_mask = ~np.isfinite(arr)
-    if np.any(bad_mask):
-        logger.warning(f"cos(): {bad_mask.sum()} non-finite values detected")
-        logger.debug(f"Example bad values: {arr[bad_mask][:10]}")
-    return _original_cos(x)
-
-def debug_sin(x):
-    arr = np.asarray(x)
-    bad_mask = ~np.isfinite(arr)
-    if np.any(bad_mask):
-        logger.warning(f"sin(): {bad_mask.sum()} non-finite values detected")
-        logger.debug(f"Example bad values: {arr[bad_mask][:10]}")
-    return _original_sin(x)
-
-# np.cos = debug_cos
-# np.sin = debug_sin
-
-# -----------------------------------------------------------------------------
-# 3. Patch pyproj Transformer.transform
-# -----------------------------------------------------------------------------
-# _orig_transform = pyproj.Transformer.transform
-
-def debug_transform(self, xx, yy, *args, **kwargs):
-    xx_arr = np.asarray(xx)
-    yy_arr = np.asarray(yy)
-
-    for name, arr in [("X", xx_arr), ("Y", yy_arr)]:
-        if np.any(~np.isfinite(arr)):
-            logger.warning(f"{name} input has {np.sum(~np.isfinite(arr))} non-finite values")
-            logger.debug(f"Example bad {name} values: {arr[~np.isfinite(arr)][:10]}")
-        else:
-            # Optional: log extreme values for sanity check
-            logger.debug(f"{name} range: min={arr.min()}, max={arr.max()}")
-
-    return _orig_transform(self, xx, yy, *args, **kwargs)
-
-# pyproj.Transformer.transform = debug_transform
