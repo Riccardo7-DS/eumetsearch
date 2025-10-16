@@ -201,7 +201,7 @@ def extract_custom_area(area_name:str, file:str):
         )
 
 
-def load_zarr_preprocess(path:str):
+def load_zarr_preprocess(path:str, channels=["vis_06", "vis_08"]) -> xr.Dataset:
     """
     Load a preprocessed zarr file.
     """
@@ -218,13 +218,16 @@ def load_zarr_preprocess(path:str):
     ds = ds.assign_coords(
         lat = ("lat", lat_1d),
         lon = ("lon", lon_1d))
-
-    ds = compute_ndvi(ds, "vis_06", "vis_08")
+    
     ds = ds.isel(lat=slice(None, None, -1))
     time_array = np.array(ds["timeStart"].values, dtype="datetime64[ns]")
     ds = ds.assign_coords(time=("time", time_array))
 
-    return ds[["vis_06", "vis_08", "ndvi"]]
+    if all(var in ds.data_vars for var in ["vis_06", "vis_08"]):
+        ds = compute_ndvi(ds, "vis_06", "vis_08")
+        return ds[["vis_06", "vis_08", "ndvi"]]
+    else: 
+        return ds
 
 
 def coords_mtg_grid(resolution_deg = 0.08789, full_grid:bool = True):

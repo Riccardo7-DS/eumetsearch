@@ -9,6 +9,8 @@ import time
 import fnmatch
 import eumdac
 from typing import Literal
+import netCDF4
+import h5py
 import multiprocessing as mp
 import os
 from dotenv import load_dotenv
@@ -51,7 +53,15 @@ products_list = {
     }
 
 class EUMDownloader:
-    """Downloader for MTG products."""
+    """Downloader for EUMETSAT products from DataStore or DataTailor
+        args:
+            product_id: EUMETSAT product ID
+            output_dir: directory to save the downloaded files
+            format: file format to download (netcdf4 or geotiff)
+            sleep_time: time to wait between status checks (in seconds)
+            max_parallel_conns: maximum number of parallel connections"""
+    
+
     @validate_call
     def __init__(self, 
                  product_id:str, 
@@ -409,7 +419,7 @@ class EUMDownloader:
             subprocess.run(["epct", "run-chain", "-f", chain_config, "--sensing-start", start, "--sensing-stop", end, input, "-o", output])
 
 
-class MTGDataParallel():
+class ZarrExport():
     def __init__(self,
                 args:dict,  
                 downloader: EUMDownloader,
@@ -419,8 +429,25 @@ class MTGDataParallel():
                 reprojection="nearest",
                 processes:PositiveInt=4,
                 initialize_dataset:bool=False,
-                chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"}
+                chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"},
+                custom_size: dict | None = None
                 ):
+        
+        """Export downloaded files to Zarr format.
+
+        Args:
+            args: command line arguments
+            downloader: EUMDownloader object with downloaded files
+            label: label for the Zarr file 
+            channels: list of channels to include in the Zarr file
+            area_reprojection: area to reproject to (e.g., "mtg_fci_latlon_1km" areas in areas.yaml file)
+            reprojection: reprojection method from pyresample (e.g., "nearest", "bilinear", "cubic")
+            processes: number of parallel processes
+            initialize_dataset: whether to initialize the dataset with the first file
+            chunks: chunk sizes for the Zarr file
+            custom_size: custom size for the Zarr file (e.g., {"time": 60} for 60 time steps)
+            
+        """
         
         
         
@@ -455,8 +482,8 @@ class MTGDataParallel():
         downloader.initiate_download(aggregated_file=Path(DATA_PATH) / "datastore_data"/ "aggregated_data.json")
 
         self.file_list = downloader.file_list
-        logger.info("The initialized class contains {} files".format(len(self.file_list)))
-        self.download_to_zarr(args, self.file_list, initialize_dataset, label)
+        logger.info("The initialized downloader contains {} files, proceeding with export to zarr...".format(len(self.file_list)))
+        self.download_to_zarr(args, self.file_list, initialize_dataset, label, custom_size)
 
     def _get_size(self, area_reprojection:str):
         if area_reprojection == "worldeqc3km":
@@ -482,7 +509,7 @@ class MTGDataParallel():
         self.status_file.write_text(json.dumps(status, indent=2))
 
 
-    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str):
+    def download_to_zarr(self, args, file_list:list, initialize_dataset:bool, label:str, custom_size: dict | None = None):
         from utils import ZarrStore
         t0 = time.time()
 
@@ -520,7 +547,8 @@ class MTGDataParallel():
                           chunks= self.chunks,
                           label=label,
                           ds= example_ds,
-                          yes_flag=args.yes)
+                          custom_size=custom_size,
+                          remove_flag=args.yes)
         
         self.status_file = Path(store.path).with_suffix(".status.json")
         
@@ -580,7 +608,22 @@ class MTGDataParallel():
            if os.path.isfile(file_path):
               os.remove(file_path)
         return
+    
 
+    def _is_netcdf_valid(self, filepath):
+        """Check if a NetCDF/HDF5 file can be opened."""
+        try:
+            with netCDF4.Dataset(filepath, "r"):
+                return True
+        except Exception as e1:
+            try:
+                with h5py.File(filepath, "r"):
+                    return True
+            except Exception as e2:
+                logger.debug(f"File check failed for {filepath}: {e1} | {e2}")
+                return False
+            
+    
     def _download_file(self, product, t, download_queue= None):
         """Download a single file and put it in the queue if provided.
         
@@ -608,10 +651,6 @@ class MTGDataParallel():
             szdsk=os.path.getsize(outfilename)
             if szdsk/1000 > dssz:
                 return outfilename
-        # with product.open() as fsrc, \
-        #         open(os.path.join(dest_folder, fsrc.name), mode='wb') as fdst:
-        #     shutil.copyfileobj(fsrc, fdst)
-        # return os.path.join(dest_folder, fsrc.name)
 
         return self._safe_download(product=product, dest_folder=dest_folder)
     
@@ -623,7 +662,7 @@ class MTGDataParallel():
     
     def _safe_download(self, product, dest_folder, max_retries=5, backoff=5):
         """
-        Download a product with retries in case of IncompleteRead or connection issues.
+        Download a zip product with retries in case of IncompleteRead or connection issues.
 
         Args:
             product: object with .open() method returning a file-like object
@@ -652,7 +691,8 @@ class MTGDataParallel():
                 if attempt < max_retries:
                     time.sleep(backoff * attempt)  # exponential-ish backoff
                 else:
-                    raise RuntimeError(f"Download failed after {max_retries} attempts: {e}")
+                    logger.info(f"Download failed after {max_retries} attempts: {e}")
+                    return None
 
         return dest_path
     
@@ -1043,11 +1083,19 @@ class MTGDataParallel():
         debug_time_vars(ds)
         
         if zarr_path is not None:
-            self._safe_write_to_zarr(ds, t, self.nectdf_lock)
+            self._safe_write_to_zarr(ds, 
+                zarr_path, 
+                t, 
+                self.nectdf_lock
+            )
+            
             read_pbar.update(1)
             task_id = f"{t_start}_{t}"
             self._mark_done(task_id)
-                
-            os.remove(natfolder_t)
+            # try:
+            #     # shutil.rmtree(natfolder_t)
+            # except FileNotFoundError as e:
+            #     logger.warning(f"Could not remove temporary folder {natfolder_t}: {e}")
+            #     pass
         else:
             return ds

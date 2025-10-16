@@ -1,7 +1,7 @@
 import os 
 from dotenv import load_dotenv
 from utils import products_list
-from utils import EUMDownloader, bbox_mtg, init_logging, MTGDataParallel
+from utils import EUMDownloader, bbox_mtg, init_logging, ZarrExport
 import argparse
 from datetime import datetime, timedelta
 import calendar
@@ -24,6 +24,7 @@ def main_batched(args, start_date, end_date, n_days=10):
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
+    observations_per_day = 5
     current = start
 
     while current <= end:
@@ -47,20 +48,21 @@ def main_batched(args, start_date, end_date, n_days=10):
                 start_time=batch_start.isoformat(),
                 end_time=batch_end.isoformat(),
                 bounding_box=NSWE,
-                observations_per_day=5,
+                observations_per_day=observations_per_day,
                 jump_minutes=60,
                 start_hour=int(start.hour)
             )
 
             # 2️⃣ Process the downloaded data for this batch (month-level Zarr)
             # logger.info(f"Processing data for {label} ({batch_start.date()} → {batch_end.date()})")
-            MTGDataParallel(
+            ZarrExport(
                 args,
                 downloader,
                 area_reprojection="mtg_fci_latlon_1km",
                 reprojection=args.resampler,
                 chunks={"time": 1, "lat": 500, "lon": 500},
                 label=label,
+                custom_size={"time": observations_per_day *int(last_day)}
             )
 
             batch_start = batch_end + timedelta(seconds=1)
@@ -101,12 +103,12 @@ def main(args, start_date, end_date):
         jump_minutes=60
     )
     
-    MTGDataParallel(args, 
+    ZarrExport(args, 
         downloader, 
         area_reprojection="mtg_fci_latlon_1km",
         reprojection=args.resampler,
-        chunks={"time":10, "lat":500, "lon":500},
-        processes=8
+        chunks={"time":1, "lat":500, "lon":500},
+        processes=8,
     )
 
 
@@ -187,7 +189,7 @@ if __name__ == "__main__":
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=1)
+        main_batched(args, start_date, end_date, n_days=10)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:

@@ -21,10 +21,11 @@ class ZarrStore:
                  label:str="VIS",
                  chunks: dict = {"time": 1, "lat": "auto", "lon": "auto"}, 
                  n_workers:PositiveInt=4,
-                 yes_flag:bool=False):
+                 custom_size:dict | None = None,
+                 remove_flag:bool=False):
         
         self.folder_path = folder_path
-        self._num_timesteps = len(file_list)
+        self._num_timesteps = len(file_list) if not custom_size or custom_size.get("time") is None else custom_size["time"]
         self._size = size  # (height, width)
         self._chunks = chunks
         self._num_timechunks = chunks.get("time", 1)
@@ -37,12 +38,12 @@ class ZarrStore:
             channels=channels, 
             size=size,
             ds_example=ds,
-            yes_flag=yes_flag
+            remove_flag=remove_flag
         )
 
         self.path = zarr_path
 
-    def zarr_store_create(self, label, channels, size, ds_example=None, yes_flag=False):
+    def zarr_store_create(self, label, channels, size, ds_example=None, remove_flag=False):
         def on_rm_error(func, path, exec_info):
             import stat
             os.chmod(path, stat.S_IWRITE)
@@ -54,10 +55,10 @@ class ZarrStore:
         )
 
         if os.path.exists(zarr_path):
-            if yes_flag:
+            if remove_flag:
                 response = 'yes'
 
-            elif not yes_flag:
+            elif not remove_flag:
                 response = "no"
                 
             else:
@@ -82,6 +83,7 @@ class ZarrStore:
                 
 
         # Dimensions
+
         num_time = self._num_timesteps  
         height, width = size
         time_coord = list(range(num_time))
