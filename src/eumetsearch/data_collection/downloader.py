@@ -1041,7 +1041,7 @@ class ZarrExport():
             if ds_new.time.size != 1:
                 raise ValueError(f"ds_new should contain exactly one timestep, found {ds_new.time.size}")
 
-            if np.any(ds_new.time.values != np.array([target_time])):
+            if ds_new.time.values != np.array([target_time]):
                 logger.warning(
                     f"[time mismatch] Aligning ds_new.time ({ds_new.time.values}) "
                     f"to store.time[{t}] ({target_time})"
@@ -1051,7 +1051,7 @@ class ZarrExport():
             # Write data slice
             ds_new.to_zarr(
                 zarr_path,
-                region={"time": slice(t, t + 1)},
+                region={"time":  slice(t, t + 1)},
                 compute=True
             )
 
@@ -1062,7 +1062,7 @@ class ZarrExport():
             )
             flag_update.to_zarr(
                 zarr_path,
-                region={"time": slice(t, t + 1)},
+                region={"time":  slice(t, t + 1)},
                 compute=True
             )
 
@@ -1120,7 +1120,7 @@ class ZarrExport():
         # debug_time_vars(ds)
         
         if zarr_path is not None:
-            self._safe_write_to_zarr(ds, 
+            t = self._safe_write_to_zarr(ds, 
                 zarr_path, 
                 t, 
                 self.nectdf_lock
