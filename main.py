@@ -10,6 +10,8 @@ from memory_profiler import profile
 def main_batched(args, start_date, end_date, n_days=10):
     logger = init_logging("./logger_mtg_fci.log", verbose=False)
     load_dotenv()
+    channels = ["vis_06", "vis_08"]
+    observations_per_day = 5
 
     product_id = products_list["MTG-1"]["product_id"]
     bbox = bbox_mtg()
@@ -24,7 +26,7 @@ def main_batched(args, start_date, end_date, n_days=10):
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    observations_per_day = 5
+    
     current = start
 
     while current <= end:
@@ -58,6 +60,7 @@ def main_batched(args, start_date, end_date, n_days=10):
             ZarrExport(
                 args,
                 downloader,
+                channels=channels,
                 area_reprojection="mtg_fci_latlon_1km",
                 reprojection=args.resampler,
                 chunks={"time": 1, "lat": 500, "lon": 500},
@@ -189,7 +192,7 @@ if __name__ == "__main__":
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=2)
+        main_batched(args, start_date, end_date, n_days=5)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:

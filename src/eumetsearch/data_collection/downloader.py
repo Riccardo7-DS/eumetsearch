@@ -482,9 +482,12 @@ class ZarrExport():
         downloader.initiate_download(aggregated_file=Path(DATA_PATH) / "datastore_data"/ "aggregated_data.json")
 
         self.file_list = downloader.file_list
-        logger.info("The initialized downloader contains {} files, proceeding with export to zarr...".format(len(self.file_list)))
-        self.download_to_zarr(args, self.file_list, initialize_dataset, label, custom_size)
-
+        if len(self.file_list) >0:
+            logger.info("The initialized downloader contains {} files, proceeding with export to zarr...".format(len(self.file_list)))
+            self.download_to_zarr(args, self.file_list, initialize_dataset, label, custom_size)
+        else:
+            logger.info("All the files have been already downloaded, proceeding with next iteration")
+            
     def _get_size(self, area_reprojection:str):
         if area_reprojection == "worldeqc3km":
             return [2048, 4096]
@@ -596,7 +599,7 @@ class ZarrExport():
                 logger.warning(f"Skipping missing file {t}.")
                 continue
             try:
-                self.read_convert_append_catch(filename=filename, t=t, zarr_path=store.path)
+                self.read_convert_append_catch(filename=filename, t=t, zarr_path=store.path, read_pbar=read_pbar)
                 read_pbar.update(1)
             except Exception as e:
                 logger.error(f"Error reading/processing file {filename}: {e}")
@@ -878,11 +881,19 @@ class ZarrExport():
             else:
                 return matches[1]
 
-    def read_convert_append_catch(self, download_queue=None, read_pbar=None, zarr_path=None, filename=None, t=None):
+    def read_convert_append_catch(self, download_queue:queue.Queue=None, read_pbar:tqdm=None, zarr_path:str=None, filename:str=None, t:int=None):
         """
         Read, convert, and append data to Zarr store.
         Segfault-safe: if a segmentation fault occurs inside pyresample/Satpy,
         the function continues with the next file gracefully.
+
+        args:
+        - download_queue: Queue for threaded processing (optional)
+        - read_pbar: Progress bar for reading (optional)
+        - zarr_path: Path to Zarr store (optional)
+        - filename: Filename to process (required if download_queue is None)
+        - t: Time index (required if download_queue is None)
+
         """
 
         def _process_in_subprocess(filename, t, product):
@@ -1020,6 +1031,23 @@ class ZarrExport():
 
             t = int(unfilled_indices[0])
 
+            target_time = store.time.isel(time=t).item()
+
+            # --- Ensure time alignment between ds_new and store
+            if "time" not in ds_new.coords:
+                raise ValueError("ds_new must have a 'time' coordinate before writing.")
+
+            # Check for mismatch
+            if ds_new.time.size != 1:
+                raise ValueError(f"ds_new should contain exactly one timestep, found {ds_new.time.size}")
+
+            if np.any(ds_new.time.values != np.array([target_time])):
+                logger.warning(
+                    f"[time mismatch] Aligning ds_new.time ({ds_new.time.values}) "
+                    f"to store.time[{t}] ({target_time})"
+                )
+                ds_new = ds_new.assign_coords(time=[target_time])
+
             # Write data slice
             ds_new.to_zarr(
                 zarr_path,
@@ -1030,7 +1058,7 @@ class ZarrExport():
             # Update flag to True
             flag_update = xr.Dataset(
                 {"filled_flag": (("time",), np.array([True], dtype=bool))},
-                coords={"time": [store.time.isel(time=t).item()]}
+                coords={"time": [target_time]}
             )
             flag_update.to_zarr(
                 zarr_path,
@@ -1053,7 +1081,7 @@ class ZarrExport():
         - zarr_path: Path to Zarr store (optional)
         """
 
-        from eumetsearch import debug_time_vars
+        # from eumetsearch import debug_time_vars
 
         # file_n = self._extract_datetime(filename)
         natfolder_t = os.path.join(self.nat_path, str(t))
@@ -1089,7 +1117,7 @@ class ZarrExport():
         if "lat" in ds and "lon" in ds:
             ds = ds.drop_vars(["lat", "lon"])
 
-        debug_time_vars(ds)
+        # debug_time_vars(ds)
         
         if zarr_path is not None:
             self._safe_write_to_zarr(ds, 
@@ -1099,6 +1127,7 @@ class ZarrExport():
             )
             
             read_pbar.update(1)
+            
             task_id = f"{t_start}_{t}"
             self._mark_done(task_id)
             # try:
