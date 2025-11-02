@@ -471,9 +471,9 @@ class ZarrExport():
            "One or more channels are not in channelsIR or channelsVIS"
         
         self.channels = channels
-        self.zip_path = Path(self.output_dir) / "zipfolder"
+        self.zip_path = Path(self.output_dir) / "disk/Data" / "zipfolder"
         os.makedirs(self.zip_path, exist_ok=True)
-        self.nat_path = Path(self.output_dir) / "natfolder"
+        self.nat_path = Path(self.output_dir) / "disk/Data" / "natfolder"
         os.makedirs(self.nat_path, exist_ok=True)
 
         self.zarr_lock = Lock()
@@ -503,12 +503,12 @@ class ZarrExport():
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
         
 
-    def _mark_done(self, task_id: str):
-        if self.status_file.exists():
+    def _mark_done(self, task_id: str, task_type: str="done"):
+        if self.status_file.exists() and self.status_file.stat().st_size > 0:
             status = json.loads(self.status_file.read_text())
         else:
             status = {}
-        status[task_id] = "done"
+        status[task_id] = task_type
         self.status_file.write_text(json.dumps(status, indent=2))
 
 
@@ -998,75 +998,74 @@ class ZarrExport():
             os.remove(filename)
 
 
-    def _safe_write_to_zarr(self, ds_new, zarr_path, t, lock):
+    def _safe_write_to_zarr(self, ds_new, zarr_path, t, lock=None):
         """
-        Safely writes ds_new to zarr_path at time index t, skipping if already filled.
-
-        Parameters
-        ----------
-        ds_new : xarray.Dataset
-            Dataset to write for a single time index (shape [time=1, ...]).
-        zarr_path : str
-            Path to existing zarr store.
-        t : int
-            Time index to write to.
-        lock : threading.Lock or multiprocessing.Lock
-            Lock to ensure safe concurrent writes.
-        main_var : str
-            Name of the primary data variable to inspect or log (e.g., "ir_105").
+        Safely writes ds_new to the first unfilled timestep in a Zarr store.
+        Handles locking and synchronization for both Python locks and Zarr synchronizers.
         """
-        with lock:
-            # Open lazily (fast)
-            store = xr.open_zarr(zarr_path, consolidated=False)
 
-            # Load the filled_flag lazily, then to NumPy
-            filled = store["filled_flag"].load().values
+        from contextlib import nullcontext
+        from zarr import ProcessSynchronizer
 
-            # Find first unfilled index
-            unfilled_indices = np.where(~filled)[0]
+        lock_ctx = lock if hasattr(lock, "__enter__") else nullcontext()
 
-            if len(unfilled_indices) == 0:
-                logger.info("[done] All timesteps already filled.")
-                return None
+        # Determine if this is a Zarr synchronizer or just a lock
+        synchronizer = lock if isinstance(lock, ProcessSynchronizer) else None
 
-            t = int(unfilled_indices[0])
+        with lock_ctx:
+            try:
+                # --- Open store lazily
+                store = xr.open_zarr(zarr_path, consolidated=False)
 
-            target_time = store.time.isel(time=t).item()
+                # --- Load current filled_flag (force NumPy)
+                # filled = store["filled_flag"].load().values
+                # unfilled_indices = np.where(~filled)[0]
 
-            # --- Ensure time alignment between ds_new and store
-            if "time" not in ds_new.coords:
-                raise ValueError("ds_new must have a 'time' coordinate before writing.")
+                # if len(unfilled_indices) == 0:
+                #     logger.info("[done] All timesteps already filled.")
+                #     return None
 
-            # Check for mismatch
-            if ds_new.time.size != 1:
-                raise ValueError(f"ds_new should contain exactly one timestep, found {ds_new.time.size}")
+                # t = int(unfilled_indices[0])
+                target_time = store.time.isel(time=t).item()
 
-            if ds_new.time.values != np.array([target_time]):
-                logger.warning(
-                    f"[time mismatch] Aligning ds_new.time ({ds_new.time.values}) "
-                    f"to store.time[{t}] ({target_time})"
+                # --- Check ds_new consistency
+                if "time" not in ds_new.coords or ds_new.time.size != 1:
+                    raise ValueError("ds_new must have exactly one timestep with a 'time' coordinate")
+
+                # --- Align ds_new time coordinate if needed
+                if ds_new.time.values != np.array([target_time]):
+                    logger.warning(
+                        f"[time mismatch] Aligning ds_new.time ({ds_new.time.values}) "
+                        f"to store.time[{t}] ({target_time})"
+                    )
+                    ds_new = ds_new.assign_coords(time=[target_time])
+
+                # --- Write dataset region
+                ds_new.to_zarr(
+                    zarr_path,
+                    region={"time": slice(t, t + 1)},
+                    compute=True,
+                    synchronizer=synchronizer,
                 )
-                ds_new = ds_new.assign_coords(time=[target_time])
 
-            # Write data slice
-            ds_new.to_zarr(
-                zarr_path,
-                region={"time":  slice(t, t + 1)},
-                compute=True
-            )
+                # --- Update filled_flag
+                flag_update = xr.Dataset(
+                    {"filled_flag": (("time",), np.array([True], dtype=bool))},
+                    coords={"time": [target_time]},
+                )
+                flag_update.to_zarr(
+                    zarr_path,
+                    region={"time": slice(t, t + 1)},
+                    compute=True,
+                    synchronizer=synchronizer,
+                )
 
-            # Update flag to True
-            flag_update = xr.Dataset(
-                {"filled_flag": (("time",), np.array([True], dtype=bool))},
-                coords={"time": [target_time]}
-            )
-            flag_update.to_zarr(
-                zarr_path,
-                region={"time":  slice(t, t + 1)},
-                compute=True
-            )
+                logger.info(f"[done] Successfully wrote timestep {t} ({target_time})")
+                return t
 
-            return t  # return which index was written for logging/debug
+            except Exception as e:
+                logger.error(f"[error] Failed writing timestep: {e}")
+                return None
 
 
 
@@ -1129,7 +1128,10 @@ class ZarrExport():
             read_pbar.update(1)
             
             task_id = f"{t_start}_{t}"
-            self._mark_done(task_id)
+            if t is not None:
+                self._mark_done(task_id)
+            else:
+                self._mark_done(task_id, task_type="failed")
             # try:
             #     # shutil.rmtree(natfolder_t)
             # except FileNotFoundError as e:

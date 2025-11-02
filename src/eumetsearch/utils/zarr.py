@@ -138,7 +138,7 @@ class ZarrStore:
             for attr in to_del:
                 ds_empty.attrs.pop(attr, None)
 
-        ds_empty.to_zarr(zarr_path, mode='w', compute=False, consolidated=True)
+        ds_empty.to_zarr(zarr_path, mode='w', compute=True, consolidated=True)
 
         return zarr_path
 

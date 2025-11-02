@@ -13,11 +13,61 @@ from datetime import UTC
 from pathlib import Path
 import numpy as np 
 import json
+import s3fs
+from typing import Union
 T = TypeVar("T")
 from contextlib import contextmanager
 
 
 logger = logging.getLogger(__name__)
+
+
+
+def minio_export_zarr(data, bucket_name, store_path):
+
+
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    access_key = os.getenv("EUMETSAT_CONSUMER_KEY")
+    access_secret = os.getenv("EUMETSAT_CONSUMER_SECRET")
+    endpoint_url = "https://object-storage.esrin.it.esa.int/"
+
+    # # Initialize the MinIO client
+    # client = Minio(
+    #     endpoint=endpoint_url,  # replace with your MinIO server endpoint (e.g. "localhost:9000")
+    #     access_key=access_key,
+    #     secret_key=access_secret,
+    #     secure=True,  # set to False if using http
+    # )
+
+    client = s3fs.S3FileSystem(
+        key=access_key,
+        secret=access_secret,
+        client_kwargs={
+            "endpoint_url": endpoint_url  # or your MinIO endpoint
+        }
+    )
+
+    store = s3fs.S3Map(root=store_path, s3=client, check=False)
+
+    # Make sure the bucket exists (creates if not)
+    found = client.bucket_exists(bucket_name)
+    if not found:
+        client.make_bucket(bucket_name)
+
+    # Upload a file directly
+    try:
+        client.fput_object(
+            bucket_name=bucket_name,
+            object_name=folder_path,
+            data=data,  # local file
+            content_type="text/csv"
+        )
+        logger.info("✅ File uploaded successfully!")
+    except S3Error as e:
+        logger.info("❌ Error uploading file:", e)
+
 
 
 def handle_exit_signal(signum, frame, aggregated_file):
@@ -38,14 +88,25 @@ class JsonDataResponse():
 
     def extract_done_timestamps(self, status_data: dict) -> set[datetime]:
         """
-        Extract unique timestamps (to minute resolution) from aggregated status data.
+        Extract unique timestamps (to minute resolution) from aggregated status data,
+        but only for entries marked as 'done'.
+
+        Example input:
+            {
+                "2025-07-21T09:00:07.000000000_None": "done",
+                "2025-07-21T10:00:05.000000000_None": "pending"
+            }
 
         Example output:
-            {datetime.datetime(2025, 5, 2, 9, 0), datetime.datetime(2025, 6, 1, 10, 15)}
+            {datetime.datetime(2025, 7, 21, 9, 0)}
         """
         timestamps = set()
 
-        for key in status_data.keys():
+        for key, value in status_data.items():
+            # Only process keys where status is "done"
+            if str(value).lower() != "done":
+                continue
+
             try:
                 # Extract the ISO timestamp part before the underscore
                 ts = key.split("_")[0]
@@ -200,16 +261,30 @@ def extract_custom_area(area_name:str, file:str):
         )
 
 
-def load_zarr_preprocess(path:str) -> xr.Dataset:
+def prepare(dataset:Union[xr.DataArray, xr.Dataset]):
+    if "longitude" in dataset.dims:
+        dataset = dataset.rename({"latitude":"lat", "longitude":"lon"})
+    if "x" in dataset.dims:
+        dataset = dataset.rename({"y":"lat", "x":"lon"})
+    if "X" in dataset.dims:
+        dataset = dataset.rename({"Y":"lat", "X":"lon"})
+    dataset.rio.write_crs("epsg:4326", inplace=True)
+    dataset.rio.set_spatial_dims(x_dim='lon', y_dim='lat', inplace=True)
+    return dataset
+
+
+def load_zarr_preprocess(path:str, storage_options:dict) -> xr.Dataset:
     from definitions import ROOT_DIR
     """
     Load a preprocessed zarr file.
-    """
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Zarr file not found at {path}")
+    # """
+    # if not os.path.exists(path):
+    #     raise FileNotFoundError(f"Zarr file not found at {path}")
     
     # Open the zarr dataset
-    ds = xr.open_zarr(path, decode_times=False).chunk("auto")
+    ds = xr.open_zarr(path, 
+                      decode_times=False, 
+                      storage_options=storage_options).chunk("auto")
 
     yaml_path = os.path.join(ROOT_DIR, "src/eumetsearch/utils/areas.yaml")
 
@@ -624,3 +699,55 @@ def ndvi_colormap(colormap: Literal["diverging","sequential"]):
 
     cmap_custom = ListedColormap(cols)
     return cmap_custom
+
+
+
+
+def bit_range_mask(start: int, end: int) -> int:
+    """
+    Create a bitmask for bits between `start` and `end` (inclusive).
+    Example: bits 0–2 -> mask 0b00000111 = 7
+    """
+    return sum(1 << i for i in range(start, end + 1))
+
+def build_mask_and_value() -> tuple[int, int]:
+    """
+    Build the bitmask and desired value based on QA bit definitions.
+    
+    Criteria:
+    - Bits 0–1 (Cloud state): 00 (Confident Clear)
+    - Bit 2 (Cloud shadow): 0 (No)
+    - Bits 3–5 (Land/Water): 000 (Land & Desert)
+    - Bit 6 (Aerosol): 1 (OK)
+    - Bits 8–15: 0 (No cirrus, no snow/ice)
+    """
+    mask = (
+        bit_range_mask(0, 1) |   # Cloud state bits
+        bit_range_mask(2, 2) |   # Cloud shadow
+        bit_range_mask(3, 5) |   # Land/water flag
+        bit_range_mask(6, 6) |   # Aerosol quality
+        bit_range_mask(8, 15)    # Cirrus, cloud, snow, etc.
+    )
+
+    desired = (
+        (0b00 << 0) |  # bits 0–1 (Confident Clear)
+        (0b0  << 2) |  # bit 2 (no shadow)
+        (0b000 << 3) | # bits 3–5 (land/desert)
+        (0b1  << 6) |  # bit 6 (aerosol OK)
+        (0b0  << 8)    # bits 8–15 all zero
+    )
+
+    return mask, desired
+
+def subset_by_QA(QA: xr.DataArray) -> xr.DataArray:
+    """
+    Subset an xarray DataArray by applying the bitmask logic
+    to select pixels that match the desired QA pattern.
+    Converts QA to int32 to avoid overflow.
+    """
+    mask, desired = build_mask_and_value()
+    
+    # Cast to int32 to prevent overflow
+    QA_int = QA.astype(np.int32)
+    
+    return QA_int.where((QA_int & mask) == desired)

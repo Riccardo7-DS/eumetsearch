@@ -24,6 +24,12 @@ dependencies = [
     "h5netcdf>=1.6.3",
     "pyproj (>=3.7.2,<4.0.0)",
     "memory-profiler>=0.61.0",
+    "minio>=7.2.18",
+    "s3fs>=2025.9.0",
+    "pyarrow>=22.0.0",
+    "fastparquet>=2024.11.0",
+    "geopandas>=1.1.1",
+    "rioxarray>=0.19.0",
 ]
 
 [dependency-groups]

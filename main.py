@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 import calendar
 from memory_profiler import profile
 
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module="pyresample.kd_tree")
+
 def main_batched(args, start_date, end_date, n_days=10):
     logger = init_logging("./logger_mtg_fci.log", verbose=False)
     load_dotenv()
@@ -185,7 +188,7 @@ if __name__ == "__main__":
         logger.info("Using single dask scheduler")
         dask.config.set(scheduler="single-threaded")
 
-    start_date = "2025-06-01T09:00:00"
+    start_date = "2025-08-01T09:00:00"
     end_date = "2025-10-13T09:30:00"
 
     try:
