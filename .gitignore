@@ -10,3 +10,5 @@ uv.lock
 src/__pycache__/
 dist/
 src/eumetsearch.egg-info/
+.s5cfg
+*.pyc

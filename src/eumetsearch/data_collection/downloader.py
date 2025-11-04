@@ -3,7 +3,7 @@ import subprocess
 from datetime import timedelta, datetime, timezone
 from eumdac.collection import SearchResults
 from eumdac.tailor_models import  RegionOfInterest
-from concurrent.futures import as_completed, ThreadPoolExecutor
+from concurrent.futures import as_completed, ThreadPoolExecutor 
 from pathlib import Path
 import time
 import fnmatch
@@ -29,6 +29,10 @@ import json
 from urllib3.exceptions import ProtocolError
 import traceback
 from threading import Thread, Lock
+from tqdm import tqdm
+import re
+
+
 tb = ProgressBar().register()
 
 logger = logging.getLogger(__name__)
@@ -511,17 +515,27 @@ class ZarrExport():
         status[task_id] = task_type
         self.status_file.write_text(json.dumps(status, indent=2))
 
+    def _extract_new_index(self, status_file:str) -> int:
+        if not status_file.exists() or status_file.stat().st_size == 0:
+            return 0
+
+        status = json.loads(status_file.read_text())
+        # Filter only keys with value == "done"
+        done_keys = [k for k, v in status.items() if v == "done"]
+        if not done_keys:
+            return None
+
+        # Sort keys (lexicographically matches chronological order for ISO timestamps)
+        last_key = sorted(done_keys)[-1]
+
+        # Extract the trailing number (after underscore)
+        match = re.search(r"_(\d+)$", last_key)
+        return int(match.group(1)) + 1 if match else None
+
 
     def download_to_zarr(self, args, file_list: list, initialize_dataset: bool, label: str, custom_size: dict | None = None):
         from eumetsearch import ZarrStore
-        import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        from tqdm import tqdm
-        import numpy as np
-        from pathlib import Path
-        import logging
 
-        logger = logging.getLogger(__name__)
         t0 = time.time()
 
         # --- Sort files by date
@@ -1117,17 +1131,19 @@ class ZarrExport():
             ds = ds.drop_vars(["lat", "lon"])
 
         # debug_time_vars(ds)
+        time_write = self._extract_new_index(self.status_file)
+        logger.debug(f"Preparing to write timestep {time_write}")
         
         if zarr_path is not None:
             t = self._safe_write_to_zarr(ds, 
                 zarr_path, 
-                t, 
+                time_write, 
                 self.nectdf_lock
             )
             
             read_pbar.update(1)
             
-            task_id = f"{t_start}_{t}"
+            task_id = f"{t_start}_{time_write}"
             if t is not None:
                 self._mark_done(task_id)
             else:

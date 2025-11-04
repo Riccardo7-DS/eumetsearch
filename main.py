@@ -188,7 +188,7 @@ if __name__ == "__main__":
         logger.info("Using single dask scheduler")
         dask.config.set(scheduler="single-threaded")
 
-    start_date = "2025-08-01T09:00:00"
+    start_date = "2025-09-01T09:00:00"
     end_date = "2025-10-13T09:30:00"
 
     try:
