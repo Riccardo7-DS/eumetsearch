@@ -6,7 +6,7 @@ profile.svg
 .venv/
 .vscode/
 uv.lock
-*.txt
+*log.txt
 src/__pycache__/
 dist/
 src/eumetsearch.egg-info/
