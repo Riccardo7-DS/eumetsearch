@@ -31,7 +31,7 @@ import traceback
 from threading import Thread, Lock
 from tqdm import tqdm
 import re
-
+from filelock import FileLock
 
 tb = ProgressBar().register()
 
@@ -362,6 +362,10 @@ class EUMDownloader:
                 dtend=end,
                 bbox=bounding_box)
             
+            if len(selected_products) == 0:
+                logger.warning(f'No datasets found for the given time range: {start} to {end}') 
+                continue
+            
             file_list.extend(selected_products)
             
             if selected_products.total_results > 1:
@@ -507,7 +511,7 @@ class ZarrExport():
             raise NotImplementedError("Area {} not implemented".format(area_reprojection))
         
 
-    def _mark_done(self, task_id: str, task_type: str="done"):
+    def _mark_done(self, task_id: str, task_type: str="done") -> int:
         if self.status_file.exists() and self.status_file.stat().st_size > 0:
             status = json.loads(self.status_file.read_text())
         else:
@@ -515,22 +519,42 @@ class ZarrExport():
         status[task_id] = task_type
         self.status_file.write_text(json.dumps(status, indent=2))
 
-    def _extract_new_index(self, status_file:str) -> int:
+    def _extract_new_index(self, status_file:str, check_missing:bool=False) -> int:
         if not status_file.exists() or status_file.stat().st_size == 0:
             return 0
+        
+        lock = FileLock(str(status_file) + ".lock")
 
-        status = json.loads(status_file.read_text())
-        # Filter only keys with value == "done"
-        done_keys = [k for k, v in status.items() if v == "done"]
+        with lock:
+            text = status_file.read_text()
+            try:
+                status = json.loads(text)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode JSON from status file {status_file}. Content: {text}")
+                time.sleep(0.1)
+                status = json.loads(status_file.read_text())
+
+    # Extract numeric suffixes from "done" keys
+        done_keys = [
+            k for k, v in status.items()
+            if v == "done" and re.search(r"_(\d+)$", k)
+        ]
         if not done_keys:
-            return None
+            return 0
+        
+        indices = sorted(int(re.search(r"_(\d+)$", k).group(1)) for k in done_keys)
 
-        # Sort keys (lexicographically matches chronological order for ISO timestamps)
-        last_key = sorted(done_keys)[-1]
-
-        # Extract the trailing number (after underscore)
-        match = re.search(r"_(\d+)$", last_key)
-        return int(match.group(1)) + 1 if match else None
+        if check_missing:
+            # Return the first missing integer in the sorted sequence
+            for expected, found in enumerate(indices):
+                if expected != found:
+                    return expected
+            return indices[-1] + 1  # no gaps
+        else:
+            # Return next index after the largest existing one
+            last_key = max(done_keys, key=lambda k: int(re.search(r"_(\d+)$", k).group(1)))
+            match = re.search(r"_(\d+)$", last_key)
+            return int(match.group(1)) + 1 if match else 0
 
 
     def download_to_zarr(self, args, file_list: list, initialize_dataset: bool, label: str, custom_size: dict | None = None):
@@ -1131,7 +1155,7 @@ class ZarrExport():
             ds = ds.drop_vars(["lat", "lon"])
 
         # debug_time_vars(ds)
-        time_write = self._extract_new_index(self.status_file)
+        time_write = self._extract_new_index(self.status_file, check_missing=True)
         logger.debug(f"Preparing to write timestep {time_write}")
         
         if zarr_path is not None:

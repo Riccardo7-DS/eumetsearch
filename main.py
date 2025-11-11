@@ -6,7 +6,7 @@ import argparse
 from datetime import datetime, timedelta
 import calendar
 from memory_profiler import profile
-
+import shutil
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="pyresample.kd_tree")
 
@@ -73,6 +73,13 @@ def main_batched(args, start_date, end_date, n_days=10):
 
             batch_start = batch_end + timedelta(seconds=1)
 
+            try:
+                remove_folder("/mnt/Data/zipfolder")
+                remove_folder("/mnt/Data/natfolder")
+            except Exception as e:
+                logger.error(f"Error removing folders: {e}")
+            
+
         logger.info(f"Finished processing for {label}")
 
         # Move to next month
@@ -117,6 +124,14 @@ def main(args, start_date, end_date):
         processes=8,
     )
 
+
+def remove_folder(folder):
+    for filename in os.listdir(folder):
+        file_path = os.path.join(folder, filename)
+        if os.path.isfile(file_path) or os.path.islink(file_path):
+            os.remove(file_path)
+        elif os.path.isdir(file_path):
+            shutil.rmtree(file_path)
 
 def monitor_resources(interval=1.0, log_file="resource_log.txt"):
     pid = os.getpid()
@@ -188,14 +203,14 @@ if __name__ == "__main__":
         logger.info("Using single dask scheduler")
         dask.config.set(scheduler="single-threaded")
 
-    start_date = "2025-09-01T09:00:00"
+    start_date = "2025-08-01T09:00:00"
     end_date = "2025-10-13T09:30:00"
 
     try:
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
         # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=5)
+        main_batched(args, start_date, end_date, n_days=1)
         # stats = pstats.Stats(pr)
         # stats.sort_stats("cumtime").print_stats(20)  # to
     except Exception as e:

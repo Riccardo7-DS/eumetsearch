@@ -725,7 +725,7 @@ def build_mask_and_value() -> tuple[int, int]:
         bit_range_mask(0, 1) |   # Cloud state bits
         bit_range_mask(2, 2) |   # Cloud shadow
         bit_range_mask(3, 5) |   # Land/water flag
-        bit_range_mask(6, 6) |   # Aerosol quality
+        bit_range_mask(6, 6) |   # Aerosol quality, check this
         bit_range_mask(8, 15)    # Cirrus, cloud, snow, etc.
     )
 
@@ -733,7 +733,7 @@ def build_mask_and_value() -> tuple[int, int]:
         (0b00 << 0) |  # bits 0–1 (Confident Clear)
         (0b0  << 2) |  # bit 2 (no shadow)
         (0b000 << 3) | # bits 3–5 (land/desert)
-        (0b1  << 6) |  # bit 6 (aerosol OK)
+        (0b1  << 6) |  # bit 6 (aerosol OK), check this
         (0b0  << 8)    # bits 8–15 all zero
     )
 
