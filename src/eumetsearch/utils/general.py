@@ -273,8 +273,21 @@ def prepare(dataset:Union[xr.DataArray, xr.Dataset]):
     return dataset
 
 
-def load_zarr_preprocess(path:str, storage_options:dict) -> xr.Dataset:
+def extract_mtg_coords():
     from definitions import ROOT_DIR
+
+    yaml_path = os.path.join(ROOT_DIR, "src/eumetsearch/utils/areas.yaml")
+
+    area = extract_custom_area("mtg_fci_latlon_1km", yaml_path)
+    lons_2d, lats_2d = area.get_lonlats()
+    lon_1d = lons_2d[0, :]
+    lat_1d = lats_2d[:, 0] 
+    return lon_1d, lat_1d
+
+
+
+
+def load_zarr_preprocess(path:str, storage_options:dict) -> xr.Dataset:
     """
     Load a preprocessed zarr file.
     # """
@@ -286,13 +299,8 @@ def load_zarr_preprocess(path:str, storage_options:dict) -> xr.Dataset:
                       decode_times=False, 
                       storage_options=storage_options).chunk("auto")
 
-    yaml_path = os.path.join(ROOT_DIR, "src/eumetsearch/utils/areas.yaml")
-
-    area = extract_custom_area("mtg_fci_latlon_1km", yaml_path)
-    lons_2d, lats_2d = area.get_lonlats()
-    lon_1d = lons_2d[0, :]
-    lat_1d = lats_2d[:, 0] 
-
+    lon_1d, lat_1d = extract_mtg_coords()
+    
     ds = ds.assign_coords(
         lat = ("lat", lat_1d),
         lon = ("lon", lon_1d))

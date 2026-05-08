@@ -36,6 +36,8 @@ dependencies = [
     "pystac-client>=0.9.0",
     "filelock>=3.20.0",
     "pydwca>=0.5.1",
+    "eodag>=3.10.0",
+    "huggingface-hub>=1.1.7",
 ]
 
 [dependency-groups]

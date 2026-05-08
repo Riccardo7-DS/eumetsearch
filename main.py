@@ -204,7 +204,7 @@ if __name__ == "__main__":
         dask.config.set(scheduler="single-threaded")
 
     start_date = "2025-08-01T09:00:00"
-    end_date = "2025-10-13T09:30:00"
+    end_date = "2025-08-30T09:00:00"
 
     try:
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
