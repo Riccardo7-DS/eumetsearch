@@ -20,6 +20,7 @@ from tqdm.auto import tqdm
 from pydantic import validate_call, PositiveInt
 import logging
 import queue
+import zarr
 import numpy as np
 import xarray as xr
 from dask.diagnostics import ProgressBar
@@ -45,16 +46,88 @@ Part of the code has been adapted from monkey_wrench https://github.com/pkhalaj/
 
 load_dotenv()
 
+FCI_CHANNELS_VIS_NIR = [
+    "vis_04", "vis_05", "vis_06", "vis_08", "vis_09",
+    "nir_13", "nir_16", "nir_22",
+]
+FCI_CHANNELS_IR = [
+    "ir_38", "wv_63", "wv_73", "ir_87", "ir_97", "ir_105", "ir_123", "ir_133",
+]
+FCI_CHANNELS_ALL = FCI_CHANNELS_VIS_NIR + FCI_CHANNELS_IR
+
+FCI_HR_CHANNELS = ["vis_06_hr", "vis_08_hr"]
+
+SEVIRI_CHANNELS_VIS_NIR = ["VIS006", "VIS008", "NIR016"]
+SEVIRI_CHANNELS_IR = ["IR039", "WV062", "WV073", "IR087", "IR097", "IR108", "IR120", "IR134"]
+SEVIRI_CHANNELS_ALL = SEVIRI_CHANNELS_VIS_NIR + SEVIRI_CHANNELS_IR
+SEVIRI_CHANNELS_HRV = SEVIRI_CHANNELS_ALL + ["HRV"]
+
 products_list = {
-    "MTG-1-HR": {"product_id":"EO:EUM:DAT:0665",
-              "product_name":"FCIL1HRFI",
-              "bands":["vis_06_hr_effective_radiance", "vis_08_hr_effective_radiance",]}, 
-    "MTG-1": {"product_id":"EO:EUM:DAT:0662",
-                "product_name":"FCIL1FDHSI",
-                "bands":["vis_06_effective_radiance", "vis_08_effective_radiance",]},
-    "MTG Cloud Mask": {"product_id":"EO:EUM:DAT:0666",
-                       "product_name":"FCIL2CLM"},
-    }
+    # MTG-I1 FCI Level 1C — Full Disk High Spatial Resolution
+    "MTG-FCI-L1C-FDHSI": {
+        "product_id": "EO:EUM:DAT:0662",
+        "product_name": "FCIL1FDHSI",
+        "satpy_reader": "fci_l1c_nc",
+        "bands": FCI_CHANNELS_ALL,
+        "calibration": "reflectance",
+    },
+    # MTG-I1 FCI Level 1C — High Resolution Full Disk
+    "MTG-FCI-L1C-HRFI": {
+        "product_id": "EO:EUM:DAT:0665",
+        "product_name": "FCIL1HRFI",
+        "satpy_reader": "fci_l1c_nc",
+        "bands": FCI_HR_CHANNELS,
+        "calibration": "reflectance",
+    },
+    # MTG-I1 FCI Level 2 — Cloud Mask
+    "MTG-FCI-L2-CLM": {
+        "product_id": "EO:EUM:DAT:0666",
+        "product_name": "FCIL2CLM",
+        "satpy_reader": "fci_l2_nc",
+        "bands": ["cloud_state"],
+        "calibration": None,
+    },
+    # MTG-I1 FCI Level 2 — Active Fire Monitoring
+    "MTG-FCI-L2-AFM": {
+        "product_id": "EO:EUM:DAT:0733",
+        "product_name": "FCIL2AFM",
+        "satpy_reader": "fci_l2_nc",
+        "bands": ["fire_probability"],
+        "calibration": None,
+    },
+    # MTG-I1 FCI Level 2 — Optimal Cloud Analysis
+    "MTG-FCI-L2-OCA": {
+        "product_id": "EO:EUM:DAT:0668",
+        "product_name": "FCIL2OCA",
+        "satpy_reader": "fci_l2_nc",
+        "bands": ["cloud_top_pressure", "cloud_optical_thickness"],
+        "calibration": None,
+    },
+    # MSG SEVIRI Level 1.5 — Prime (Meteosat-11/12 at 0°E)
+    "MSG-SEVIRI-L1-HRY": {
+        "product_id": "EO:EUM:DAT:MSG:HRSEVIRI",
+        "product_name": "HRSEVIRI",
+        "satpy_reader": "seviri_l1b_hrit",
+        "bands": SEVIRI_CHANNELS_HRV,
+        "calibration": "reflectance",
+    },
+    # MSG SEVIRI Level 1.5 — Indian Ocean Data Coverage (41.5°E)
+    "MSG-SEVIRI-L1-IODC": {
+        "product_id": "EO:EUM:DAT:MSG:HRSEVIRI-IODC",
+        "product_name": "HRSEVIRI-IODC",
+        "satpy_reader": "seviri_l1b_hrit",
+        "bands": SEVIRI_CHANNELS_HRV,
+        "calibration": "reflectance",
+    },
+    # MSG SEVIRI Level 1.5 — Rapid Scan Service (3.5°E)
+    "MSG-SEVIRI-RSS": {
+        "product_id": "EO:EUM:DAT:MSG:RSS",
+        "product_name": "RSS",
+        "satpy_reader": "seviri_l1b_hrit",
+        "bands": SEVIRI_CHANNELS_ALL,
+        "calibration": "reflectance",
+    },
+}
 
 class EUMDownloader:
     """Downloader for EUMETSAT products from DataStore or DataTailor
@@ -92,11 +165,16 @@ class EUMDownloader:
         self._data_store = self.initialize_datastore(self._token)
         self._data_tailor = self.initialize_datatailor(self._token)
         self._selected_collection = self._data_store.get_collection(product_id)
-    
-        product_key = [k for k, v in products_list.items() if v["product_id"] == product_id][0]
-        self.product_name = products_list[product_key]["product_name"]
+
+        product_key = next((k for k, v in products_list.items() if v["product_id"] == product_id), None)
+        if product_key is None:
+            raise ValueError(f"Product ID '{product_id}' not found in products_list")
+        product_meta = products_list[product_key]
+        self.product_name = product_meta["product_name"]
         self.product_id = product_id
-        self.channels = products_list[product_key]["bands"]
+        self.satpy_reader = product_meta.get("satpy_reader", "fci_l1c_nc")
+        self.calibration = product_meta.get("calibration", "reflectance")
+        self.channels = product_meta["bands"]
 
     @staticmethod
     def len(product_ids: SearchResults) -> int:
@@ -429,24 +507,32 @@ class EUMDownloader:
 
 class ZarrExport():
     def __init__(self,
-                args:dict,  
+                args:dict,
                 downloader: EUMDownloader,
-                label:str, 
+                label:str,
                 channels:list= ['vis_06',  'vis_08'],
                 area_reprojection:Union[None, str]=None,
                 reprojection="nearest",
                 processes:PositiveInt=4,
                 initialize_dataset:bool=False,
                 chunks: dict = {"time": 1, "lon": "auto", "lat": "auto"},
-                custom_size: dict | None = None
+                custom_size: dict | None = None,
+                majortom: bool = False,
+                majortom_patch_size: int = 64,
+                majortom_grid_path: str | None = None,
+                majortom_spacing_km: float = 100.0,
+                also_majortom: bool = False,
+                bbox_filter: tuple[float, float, float, float] | None = None,
+                dtype: str = "float32",
+                zarr_path: str | None = None,
                 ):
-        
+
         """Export downloaded files to Zarr format.
 
         Args:
             args: command line arguments
             downloader: EUMDownloader object with downloaded files
-            label: label for the Zarr file 
+            label: label for the Zarr file
             channels: list of channels to include in the Zarr file
             area_reprojection: area to reproject to (e.g., "mtg_fci_latlon_1km" areas in areas.yaml file)
             reprojection: reprojection method from pyresample (e.g., "nearest", "bilinear", "cubic")
@@ -454,14 +540,33 @@ class ZarrExport():
             initialize_dataset: whether to initialize the dataset with the first file
             chunks: chunk sizes for the Zarr file
             custom_size: custom size for the Zarr file (e.g., {"time": 60} for 60 time steps)
-            
+            majortom: if True, skip regular grid and write only MajorTOM sparse Zarr
+            also_majortom: if True, write both regular grid Zarr AND MajorTOM sparse Zarr
+                           using a single download (reuses the already-extracted NC files)
+            bbox_filter: (lat_min, lat_max, lon_min, lon_max) to restrict MajorTOM grid cells
+
         """
-        
-        
-        
+
+        # Route to MajorTOM-only export when flag is set
+        if majortom:
+            from eumetsearch.data_collection.majortom_export import MajorTomZarrExport
+            MajorTomZarrExport(
+                args=args,
+                downloader=downloader,
+                label=label,
+                channels=channels,
+                patch_size=majortom_patch_size,
+                grid_path=majortom_grid_path,
+                spacing_km=majortom_spacing_km,
+                bbox_filter=bbox_filter,
+                processes=processes,
+                dtype=dtype,
+                zarr_path=zarr_path,
+            )
+            return
+
         from eumetsearch import compute_auto_chunks
         from definitions import DATA_PATH
-
 
         self.output_dir = downloader.output_dir
         self.size = self._get_size(area_reprojection)
@@ -471,13 +576,17 @@ class ZarrExport():
         self.chunks = compute_auto_chunks(shape= input_shape)
         self._reprojection = reprojection
         self._threading = args.threading
+        self._satpy_reader = getattr(downloader, "satpy_reader", "fci_l1c_nc")
+        self._calibration = getattr(downloader, "calibration", "reflectance")
 
-        channelsIR = ['ir_105', 'ir_123',  'ir_133',  'ir_38',  'ir_87',  'ir_97',  'wv_63',  'wv_73']    
-        channelsVIS= ['nir_13', 'nir_16',  'nir_22',  'vis_04',  'vis_05', 'vis_06',  'vis_08',  'vis_09', ]
-        
-        assert all(f in channelsIR or f in channelsVIS for f in channels), \
-           "One or more channels are not in channelsIR or channelsVIS"
-        
+        allowed_channels = (
+            FCI_CHANNELS_ALL + FCI_HR_CHANNELS +
+            SEVIRI_CHANNELS_HRV +
+            ["cloud_state", "fire_probability", "cloud_top_pressure", "cloud_optical_thickness"]
+        )
+        assert all(ch in allowed_channels for ch in channels), \
+            f"One or more channels are not recognised. Allowed: {allowed_channels}"
+
         self.channels = channels
         self.zip_path = Path(self.output_dir) / "disk/Data" / "zipfolder"
         os.makedirs(self.zip_path, exist_ok=True)
@@ -490,9 +599,33 @@ class ZarrExport():
         downloader.initiate_download(aggregated_file=Path(DATA_PATH) / "datastore_data"/ "aggregated_data.json")
 
         self.file_list = downloader.file_list
-        if len(self.file_list) >0:
+        if len(self.file_list) > 0:
             logger.info("The initialized downloader contains {} files, proceeding with export to zarr...".format(len(self.file_list)))
             self.download_to_zarr(args, self.file_list, initialize_dataset, label, custom_size)
+
+            if also_majortom:
+                # Reuse the already-extracted NC files — no second download needed.
+                from eumetsearch.data_collection.majortom_export import MajorTomZarrExport
+                preextracted = [
+                    str(self.nat_path / str(t))
+                    for t in range(len(self.file_list))
+                    if (self.nat_path / str(t)).exists()
+                ]
+                logger.info(f"also_majortom: running MajorTOM export on {len(preextracted)} pre-extracted folders")
+                MajorTomZarrExport(
+                    args=args,
+                    downloader=downloader,
+                    label=label,
+                    channels=channels,
+                    patch_size=majortom_patch_size,
+                    grid_path=majortom_grid_path,
+                    spacing_km=majortom_spacing_km,
+                    bbox_filter=bbox_filter,
+                    processes=processes,
+                    preextracted_natfolders=preextracted,
+                    dtype=dtype,
+                    zarr_path=zarr_path,
+                )
         else:
             logger.info("All the files have been already downloaded, proceeding with next iteration")
             
@@ -860,10 +993,12 @@ class ZarrExport():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-        calibration = "reflectance"
-        files = find_files_and_readers(base_dir=natfolder, reader="fci_l1c_nc", missing_ok=True)
+        files = find_files_and_readers(base_dir=natfolder, reader=self._satpy_reader, missing_ok=True)
         scn = Scene(filenames=files)
-        scn.load(self.channels, calibration=calibration)
+        load_kwargs = {}
+        if self._calibration:
+            load_kwargs["calibration"] = self._calibration
+        scn.load(self.channels, **load_kwargs)
 
         # -------------------------------------------------------------
         # Thread-safe environment for pyproj (no multithreading issues)
@@ -1038,71 +1173,58 @@ class ZarrExport():
 
     def _safe_write_to_zarr(self, ds_new, zarr_path, t, lock=None):
         """
-        Safely writes ds_new to the first unfilled timestep in a Zarr store.
-        Handles locking and synchronization for both Python locks and Zarr synchronizers.
-        """
+        Safely write ds_new to position t in the Zarr store.
 
+        The store time coordinate is datetime64 (NaT until written).  On each
+        write we:
+          1. Stamp the time coordinate at index t with ds_new's timestamp.
+          2. Write all data variables via xr region write.
+          3. Flip filled_flag[t] to True.
+        """
         from contextlib import nullcontext
-        from zarr import ProcessSynchronizer
 
         lock_ctx = lock if hasattr(lock, "__enter__") else nullcontext()
 
-        # Determine if this is a Zarr synchronizer or just a lock
-        synchronizer = lock if isinstance(lock, ProcessSynchronizer) else None
-
         with lock_ctx:
             try:
-                # --- Open store lazily
-                store = xr.open_zarr(zarr_path, consolidated=False)
-
-                # --- Load current filled_flag (force NumPy)
-                # filled = store["filled_flag"].load().values
-                # unfilled_indices = np.where(~filled)[0]
-
-                # if len(unfilled_indices) == 0:
-                #     logger.info("[done] All timesteps already filled.")
-                #     return None
-
-                # t = int(unfilled_indices[0])
-                target_time = store.time.isel(time=t).item()
-
-                # --- Check ds_new consistency
                 if "time" not in ds_new.coords or ds_new.time.size != 1:
                     raise ValueError("ds_new must have exactly one timestep with a 'time' coordinate")
 
-                # --- Align ds_new time coordinate if needed
-                if ds_new.time.values != np.array([target_time]):
-                    logger.warning(
-                        f"[time mismatch] Aligning ds_new.time ({ds_new.time.values}) "
-                        f"to store.time[{t}] ({target_time})"
-                    )
-                    ds_new = ds_new.assign_coords(time=[target_time])
+                actual_time = ds_new.time.values[0]  # numpy datetime64
 
-                # --- Write dataset region
+                # --- Stamp the time coordinate for this slot via direct zarr access.
+                # xarray region writes do not update coordinate arrays, so we do it
+                # manually on the underlying zarr array.
+                z = zarr.open(zarr_path, mode="a")
+                time_ns = np.datetime64(actual_time, "ns").view(np.int64)
+                z["time"][t] = time_ns
+
+                # --- Align ds_new.time to match what we just stamped (consistency)
+                ds_new = ds_new.assign_coords(time=[actual_time])
+
+                # --- Write data variables
                 ds_new.to_zarr(
                     zarr_path,
                     region={"time": slice(t, t + 1)},
                     compute=True,
-                    synchronizer=synchronizer,
                 )
 
                 # --- Update filled_flag
                 flag_update = xr.Dataset(
                     {"filled_flag": (("time",), np.array([True], dtype=bool))},
-                    coords={"time": [target_time]},
+                    coords={"time": [actual_time]},
                 )
                 flag_update.to_zarr(
                     zarr_path,
                     region={"time": slice(t, t + 1)},
                     compute=True,
-                    synchronizer=synchronizer,
                 )
 
-                logger.info(f"[done] Successfully wrote timestep {t} ({target_time})")
+                logger.info(f"[done] Successfully wrote timestep {t} ({actual_time})")
                 return t
 
             except Exception as e:
-                logger.error(f"[error] Failed writing timestep: {e}")
+                logger.error(f"[error] Failed writing timestep {t}: {e}")
                 return None
 
 

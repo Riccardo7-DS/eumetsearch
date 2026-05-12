@@ -1,7 +1,7 @@
 [project]
 name = "eumetsearch"
 version = "0.1.0"
-description = "Package to download and reproject to regular grid data from MTG/MSG FCI"
+description = "Package to download MTG FCI / MSG SEVIRI data and export to regular-grid or MajorTOM sparse Zarr"
 authors = [
   { name = "Riccardo D’Ercole" }
 ]
@@ -38,10 +38,21 @@ dependencies = [
     "pydwca>=0.5.1",
     "eodag>=3.10.0",
     "huggingface-hub>=1.1.7",
+    "h5py>=3.16.0",
+    "earthengine-api>=1.7.26",
+]
+
+[project.optional-dependencies]
+# Install with: pip install -e ".[majortom]"
+# The majortom package provides the ESA PhiLab MajorTOM global grid.
+# If not installed, the grid is downloaded from HuggingFace Hub automatically.
+majortom = [
+    "majortom @ git+https://github.com/ESA-PhiLab/Major-TOM.git",
 ]
 
 [dependency-groups]
 dev = [
     "py-spy>=0.4.1",
+    "pytest>=8.0.0",
 ]
 

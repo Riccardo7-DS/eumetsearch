@@ -1,7 +1,7 @@
 import os 
 from dotenv import load_dotenv
 from eumetsearch import products_list
-from eumetsearch import EUMDownloader, bbox_mtg, init_logging, ZarrExport
+from eumetsearch import EUMDownloader, bbox_mtg, init_logging, ZarrExport, get_bbox, BBOX_REGISTRY
 import argparse
 from datetime import datetime, timedelta
 import calendar
@@ -16,10 +16,10 @@ def main_batched(args, start_date, end_date, n_days=10):
     channels = ["vis_06", "vis_08"]
     observations_per_day = 5
 
-    product_id = products_list["MTG-1"]["product_id"]
-    bbox = bbox_mtg()
-    W, S, E, N = bbox
+    product_id = products_list["MTG-FCI-L1C-FDHSI"]["product_id"]
+    W, S, E, N = get_bbox(args.region)
     NSWE = [N, S, W, E]
+    logger.info(f"Region: '{args.region}'  bbox (W,S,E,N): {W}, {S}, {E}, {N}")
 
     downloader = EUMDownloader(
         product_id=product_id,
@@ -29,7 +29,7 @@ def main_batched(args, start_date, end_date, n_days=10):
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    
+
     current = start
 
     while current <= end:
@@ -48,7 +48,7 @@ def main_batched(args, start_date, end_date, n_days=10):
             batch_end = min(batch_start + timedelta(days=n_days - 1, hours=23, minutes=59, seconds=59), month_end)
             logger.info(f"Downloading data for batch {batch_start.date()} → {batch_end.date()}")
 
-            # 1️⃣ Download data for this batch
+            # 1. Download data for this batch
             downloader.download_interval(
                 start_time=batch_start.isoformat(),
                 end_time=batch_end.isoformat(),
@@ -58,9 +58,8 @@ def main_batched(args, start_date, end_date, n_days=10):
                 start_hour=int(start.hour)
             )
 
-            # 2️⃣ Process the downloaded data for this batch (month-level Zarr)
-            # logger.info(f"Processing data for {label} ({batch_start.date()} → {batch_end.date()})")
-            ZarrExport(
+            # 2. Process the downloaded data for this batch (month-level Zarr)
+            export = ZarrExport(
                 args,
                 downloader,
                 channels=channels,
@@ -68,14 +67,14 @@ def main_batched(args, start_date, end_date, n_days=10):
                 reprojection=args.resampler,
                 chunks={"time": 1, "lat": 500, "lon": 500},
                 label=label,
-                custom_size={"time": observations_per_day *int(last_day)}
+                custom_size={"time": observations_per_day * int(last_day)}
             )
 
             batch_start = batch_end + timedelta(seconds=1)
 
             try:
-                remove_folder("/mnt/Data/zipfolder")
-                remove_folder("/mnt/Data/natfolder")
+                remove_folder(str(downloader.output_dir / "disk" / "Data" / "zipfolder"))
+                remove_folder(str(downloader.output_dir / "disk" / "Data" / "natfolder"))
             except Exception as e:
                 logger.error(f"Error removing folders: {e}")
             
@@ -92,35 +91,43 @@ def main_batched(args, start_date, end_date, n_days=10):
 def main(args, start_date, end_date):
     logger = init_logging("./logger_mtg_fci.log", verbose=False)
     cpus = os.cpu_count()
-    
-    # Load environment variables from .env file
+
     load_dotenv()
-    
-    product_id = products_list["MTG-1"]["product_id"]
-    
-    bbox = bbox_mtg()
-    W,S,E,N = bbox[0], bbox[1], bbox[2], bbox[3]
+
+    product_id = products_list["MTG-FCI-L1C-FDHSI"]["product_id"]
+
+    W, S, E, N = get_bbox(args.region)
     NSWE = [N, S, W, E]
-    
+    logger.info(f"Region: '{args.region}'  bbox (W,S,E,N): {W}, {S}, {E}, {N}")
+
+    start = datetime.fromisoformat(start_date)
+
     downloader = EUMDownloader(
-        product_id=product_id, 
+        product_id=product_id,
         output_dir="./data/datastore_data",
         max_parallel_conns=10,
     )
-    
+
     downloader.download_interval(
-        start_time=start_date, 
+        start_time=start_date,
         end_time=end_date,
-        bounding_box=NSWE, 
+        bounding_box=NSWE,
         observations_per_day=6,
-        jump_minutes=60
+        jump_minutes=60,
+        start_hour=int(start.hour),
     )
-    
-    ZarrExport(args, 
-        downloader, 
+
+    year, month = start.year, start.month
+    label = f"mtg_{year}_{month:02d}"
+
+    ZarrExport(
+        args,
+        downloader,
+        label=label,
+        channels=["vis_06", "vis_08"],
         area_reprojection="mtg_fci_latlon_1km",
         reprojection=args.resampler,
-        chunks={"time":1, "lat":500, "lon":500},
+        chunks={"time": 1, "lat": 500, "lon": 500},
         processes=8,
     )
 
@@ -168,6 +175,12 @@ if __name__ == "__main__":
     argparser.add_argument('-y', '--yes', action='store_true', help='Automatically confirm deletion of zarr')
     argparser.add_argument('-r', '--remove', action='store_true', help='Automatically confirm deletion of source files')
     argparser.add_argument("--resampler", default=os.getenv("resampler", "nearest"))
+    argparser.add_argument(
+        "--region",
+        default=os.getenv("EUMETS_REGION", "mtg"),
+        choices=sorted(BBOX_REGISTRY),
+        help=f"Named bounding box for spatial filtering. Available: {', '.join(sorted(BBOX_REGISTRY))}. Default: mtg (full disk).",
+    )
     args = argparser.parse_args()
 
 

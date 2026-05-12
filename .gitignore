@@ -12,3 +12,4 @@ dist/
 src/eumetsearch.egg-info/
 .s5cfg
 *.pyc
+*.json
