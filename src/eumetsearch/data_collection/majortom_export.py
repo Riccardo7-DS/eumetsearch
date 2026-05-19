@@ -1,17 +1,22 @@
 """
-MajorTOM-format sparse Zarr export for FCI geostationary data.
+MajorTOM-format batched Zarr export for FCI geostationary data.
 
-Output structure (mirrors modis_majortom convention):
+Output structure:
 
     <label>.zarr/
       patches/
         <channel>/          e.g. vis_06
           <timestamp>/      e.g. 2025-08-01T12:00:00
-            <grid_id>/      e.g. 0266_0764
-              data          zarr.Array shape (patch_size, patch_size)
+            data            zarr.Array  shape (N, patch_H, patch_W)  float16
+            grid_ids        zarr.Array  shape (N,)                   unicode
 
-No resampling to a regular lat/lon grid is performed; patches are extracted
-from the native FCI scene in its native geostationary projection.
+All patches for one channel × timestamp are stored as a single 3-D array,
+with a companion ``grid_ids`` array mapping row index → cell identifier.
+Chunks are (1, H, W) so individual patches can be accessed efficiently.
+
+When multiple spatial tiles write to the same consolidated zarr, the arrays
+are appended along axis 0 (grid cells are non-overlapping between tiles so
+no deduplication is needed).
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
-from typing import Union
 
 import numpy as np
 import zarr
@@ -34,17 +38,16 @@ logger = logging.getLogger(__name__)
 
 class MajorTomZarrExport:
     """
-    Download FCI data and write patches to a sparse MajorTOM Zarr store.
+    Download FCI data and write patches to a batched MajorTOM Zarr store.
 
     Parameters
     ----------
     args :
-        Namespace from argparse (requires ``args.threading``, ``args.yes``,
-        ``args.remove``, ``args.resampler``).
+        Namespace from argparse (requires ``args.threading``).
     downloader :
         An initialised and authenticated ``EUMDownloader`` instance.
     label :
-        Output filename stem — the zarr will be ``{output_dir}/{label}.zarr``.
+        Output filename stem.
     channels :
         List of FCI channel names to extract.
     patch_size :
@@ -54,9 +57,17 @@ class MajorTomZarrExport:
     processes :
         Threads used for parallel file downloads.
     grid_path :
-        Optional path to a local MajorTOM grid parquet/geojson file.
+        Path to an external MajorTOM grid file.  When None a regular lat/lon
+        grid is generated at ``spacing_km`` spacing.
+    spacing_km :
+        Cell spacing for the generated grid (default 100 km).
     bbox_filter :
         ``(lat_min, lat_max, lon_min, lon_max)`` to restrict grid cells.
+    dtype :
+        NumPy dtype for patch data (default ``float32``).
+    zarr_path :
+        Override output zarr path.  When provided the store is opened in
+        append mode so multiple tiles write into the same file.
     """
 
     def __init__(
@@ -75,21 +86,6 @@ class MajorTomZarrExport:
         dtype: str = "float32",
         zarr_path: str | Path | None = None,
     ):
-        """
-        Parameters
-        ----------
-        grid_path :
-            Path to an external MajorTOM grid file.  When None (default) a
-            regular lat/lon grid is generated at ``spacing_km`` spacing.
-        spacing_km :
-            Cell spacing for the generated grid (default 100 km).  Ignored
-            when ``grid_path`` is provided.
-        zarr_path :
-            Override the output zarr path.  When provided, the store is
-            opened in append mode so multiple tiles can write into the same
-            file sequentially.  When None (default) the path is derived from
-            ``output_dir / label_majortom.zarr``.
-        """
         from eumetsearch.transform import FCIMajorTomGrid
 
         self.output_dir = downloader.output_dir
@@ -109,12 +105,10 @@ class MajorTomZarrExport:
 
         self._dl_lock = Lock()
 
-        if zarr_path is not None:
-            self.zarr_path = str(zarr_path)
-        else:
-            self.zarr_path = str(Path(self.output_dir) / f"{label}_majortom.zarr")
+        self.zarr_path = str(zarr_path) if zarr_path is not None else str(
+            Path(self.output_dir) / f"{label}_majortom.zarr"
+        )
 
-        # Build grid
         bbox_kw = {}
         if bbox_filter is not None:
             lat_min, lat_max, lon_min, lon_max = bbox_filter
@@ -122,7 +116,6 @@ class MajorTomZarrExport:
         self.grid = FCIMajorTomGrid(grid_path=grid_path, spacing_km=spacing_km, **bbox_kw)
 
         if preextracted_natfolders is not None:
-            # Skip download: NC files are already on disk from a prior ZarrExport run.
             logger.info(
                 f"MajorTOM export (pre-extracted): processing {len(preextracted_natfolders)} folders"
             )
@@ -149,16 +142,57 @@ class MajorTomZarrExport:
         root.require_group("patches")
         return root["patches"]
 
-    def _write_patch(
+    def _write_scene_batch(
         self,
-        date_grp: zarr.Group,
-        grid_id: str,
-        patch: np.ndarray,
+        patches_grp: zarr.Group,
+        date_str: str,
+        all_patches: dict[str, list[np.ndarray]],
+        all_grid_ids: list[str],
+        all_patch_origins: list[tuple[int, int]],
     ) -> None:
-        """Write one patch into a pre-opened channel/timestamp group."""
-        safe_id = grid_id.replace("/", "_").replace("\\", "_")
-        if safe_id not in date_grp:
-            date_grp.create_dataset(safe_id, data=patch, chunks=patch.shape)
+        """
+        Write all patches for one scene as (N, H, W) arrays.
+
+        If the timestamp group already contains data from a previous tile,
+        the new patches are appended along axis 0 (tiles use non-overlapping
+        grid cells so no deduplication is needed).
+
+        ``patch_origins`` is stored as an int32 array of shape (N, 2) where
+        each row is [row0, col0] — the top-left corner of the patch in the
+        FCI full-disk pixel grid (row 0 = north edge, col 0 = west edge).
+        These values are required by ``fci_modis_align.align_patches``.
+        """
+        n = len(all_grid_ids)
+        if n == 0:
+            return
+
+        H = W = self.patch_size * 2
+        grid_ids_arr = np.array(all_grid_ids)                                  # (N,)   unicode
+        origins_arr  = np.array(all_patch_origins, dtype=np.int32)             # (N, 2) int32
+
+        # Use large chunks to minimise the number of chunk files written.
+        # chunk_n=2048 → ≤14 files per channel/scene for a 100km full-disk grid
+        # (~28K patches).  Smaller values allow more granular random access at
+        # the cost of more files and slower sequential writes.
+        chunk_n = min(n, 2048)
+
+        for ch in self.channels:
+            data_arr = np.stack(all_patches[ch]).astype(self.dtype)  # (N, H, W)
+            ts_grp = patches_grp.require_group(ch).require_group(date_str)
+
+            if "data" not in ts_grp:
+                ts_grp.create_dataset("data", data=data_arr, chunks=(chunk_n, H, W))
+                ts_grp.create_dataset("grid_ids",      data=grid_ids_arr, chunks=n)
+                ts_grp.create_dataset("patch_origins", data=origins_arr,  chunks=(n, 2))
+            else:
+                # Append from another tile covering the same timestamp
+                ts_grp["data"].append(data_arr, axis=0)
+                ts_grp["grid_ids"].append(grid_ids_arr, axis=0)
+                if "patch_origins" in ts_grp:
+                    ts_grp["patch_origins"].append(origins_arr, axis=0)
+                else:
+                    # Back-fill for stores created before this field was added
+                    ts_grp.create_dataset("patch_origins", data=origins_arr, chunks=(n, 2))
 
     # ------------------------------------------------------------------
     # Scene reading
@@ -195,48 +229,56 @@ class MajorTomZarrExport:
     # ------------------------------------------------------------------
 
     def _process_scene(self, scn, patches_grp: zarr.Group) -> int:
-        """Extract patches for all MajorTOM cells visible in this scene."""
+        """
+        Extract all valid patches for this scene and write them as a batch.
+
+        Returns the number of cells written.
+        """
         import dask
-        from eumetsearch.transform import extract_fci_patch, latlon_to_fci_pixel
+        from eumetsearch.transform import extract_fci_patch
 
         date_str = self._scene_timestamp(scn)
         area = scn[self.channels[0]].area
-        n_written = 0
+
+        # Vectorised coordinate transform: one pyproj call for all grid cells.
+        # This replaces the old per-cell Python loop with individual transforms.
+        rows, cols, grid_ids = self.grid.visible_pixel_coords(area)
 
         # Compute all channels once with a synchronous scheduler.
-        # netCDF4/HDF5 is not thread-safe, so the default threaded Dask
+        # netCDF4/HDF5 is not thread-safe — the default threaded Dask
         # scheduler causes "NetCDF: HDF error" on multi-chunk FCI scenes.
         with dask.config.set(scheduler="synchronous"):
             channel_data = {ch: scn[ch].values for ch in self.channels}
 
-        # Pre-create channel/timestamp groups once per scene so the cell loop
-        # never calls require_group (which hits the filesystem each time).
-        date_grps = {
-            ch: patches_grp.require_group(ch).require_group(date_str)
-            for ch in self.channels
-        }
+        # Collect valid patches
+        all_patches: dict[str, list[np.ndarray]] = {ch: [] for ch in self.channels}
+        all_grid_ids: list[str] = []
+        all_patch_origins: list[tuple[int, int]] = []
 
-        for grid_id, lat, lon in self.grid.cells_in_area(area):
-            row, col = latlon_to_fci_pixel(area, lat, lon)
-            if row is None:
-                continue
+        for row, col, grid_id in zip(rows, cols, grid_ids):
+            row_i, col_i = int(row), int(col)
+            row0 = row_i - self.patch_size
+            col0 = col_i - self.patch_size
 
             patches_for_cell: dict[str, np.ndarray] = {}
             for ch in self.channels:
                 patch = extract_fci_patch(
-                    channel_data[ch], row, col, self.patch_size, self.max_null_fraction
+                    channel_data[ch], row_i, col_i,
+                    self.patch_size, self.max_null_fraction,
                 )
                 if patch is None:
                     break
-                patches_for_cell[ch] = patch.astype(self.dtype)
+                patches_for_cell[ch] = patch
             else:
-                # All channels yielded valid patches → write them
-                for ch, patch in patches_for_cell.items():
-                    self._write_patch(date_grps[ch], grid_id, patch)
-                n_written += 1
+                all_grid_ids.append(grid_id)
+                all_patch_origins.append((row0, col0))
+                for ch in self.channels:
+                    all_patches[ch].append(patches_for_cell[ch])
 
-        logger.info(f"  [{date_str}] wrote {n_written} patches")
-        return n_written
+        self._write_scene_batch(patches_grp, date_str, all_patches, all_grid_ids, all_patch_origins)
+        n = len(all_grid_ids)
+        logger.info(f"  [{date_str}] wrote {n} patches")
+        return n
 
     # ------------------------------------------------------------------
     # Main download → extract → write pipeline
@@ -293,7 +335,9 @@ class MajorTomZarrExport:
             except Exception as e:
                 logger.error(f"Error processing {natfolder}: {e}")
         zarr.consolidate_metadata(self.zarr_path)
-        logger.info(f"MajorTOM export done: {total_patches} cell-time patches written to {self.zarr_path}")
+        logger.info(
+            f"MajorTOM export done: {total_patches} cell-time patches written to {self.zarr_path}"
+        )
 
     def _run(self, args, label: str) -> None:
         """Main pipeline: parallel download → sequential scene processing."""
@@ -320,9 +364,7 @@ class MajorTomZarrExport:
 
         # Sequential scene processing (satpy/pyproj are not fork-safe)
         total_patches = 0
-        for i, natfolder in enumerate(
-            tqdm(natfolders, desc="Extracting MajorTOM patches")
-        ):
+        for i, natfolder in enumerate(tqdm(natfolders, desc="Extracting MajorTOM patches")):
             if natfolder is None:
                 continue
             try:
@@ -332,7 +374,6 @@ class MajorTomZarrExport:
             except Exception as e:
                 logger.error(f"Error processing file {i}: {e}")
 
-        # Consolidate metadata for fast xr.open_zarr / zarr.open
         zarr.consolidate_metadata(self.zarr_path)
         logger.info(
             f"MajorTOM export done: {total_patches} cell-time patches written to {self.zarr_path}"
@@ -344,18 +385,11 @@ def merge_majortom_zarrs(
     output_path: str | Path,
 ) -> None:
     """
-    Merge multiple per-tile MajorTOM sparse Zarr stores into a single store.
+    Merge multiple per-tile batched MajorTOM Zarr stores into one store.
 
-    Patches from each tile are copied without re-downloading or re-reading
-    raw data.  If the same grid_id/timestamp already exists in the output
-    (e.g. from a previous partial run), it is skipped.
-
-    Parameters
-    ----------
-    tile_zarr_paths :
-        Ordered list of per-tile `*_majortom.zarr` paths.
-    output_path :
-        Destination zarr path for the consolidated store.
+    For each (channel, timestamp) the data and grid_ids arrays from all
+    tiles are concatenated along axis 0 and deduplicated by grid_id.
+    Already-present grid_ids are skipped.
     """
     output_path = str(output_path)
     root_out = zarr.open_group(output_path, mode="a")
@@ -379,21 +413,40 @@ def merge_majortom_zarrs(
             ch_out = patches_out.require_group(channel)
             ch_in = patches_in[channel]
             for timestamp in ch_in:
-                ts_out = ch_out.require_group(timestamp)
                 ts_in = ch_in[timestamp]
-                for grid_id in ts_in:
-                    if grid_id in ts_out:
-                        total_skipped += 1
+                if "data" not in ts_in or "grid_ids" not in ts_in:
+                    continue
+
+                data_in    = ts_in["data"][:]             # (N, H, W)
+                gids_in    = ts_in["grid_ids"][:]         # (N,)
+                origins_in = ts_in["patch_origins"][:] if "patch_origins" in ts_in else None
+
+                ts_out = ch_out.require_group(timestamp)
+                if "data" not in ts_out:
+                    H, W = data_in.shape[1], data_in.shape[2]
+                    ts_out.create_dataset("data", data=data_in, chunks=(1, H, W))
+                    ts_out.create_dataset("grid_ids", data=gids_in, chunks=len(gids_in))
+                    if origins_in is not None:
+                        ts_out.create_dataset("patch_origins", data=origins_in,
+                                              chunks=(len(gids_in), 2))
+                    total_copied += len(gids_in)
+                else:
+                    existing_ids = set(ts_out["grid_ids"][:].tolist())
+                    mask = np.array([g not in existing_ids for g in gids_in])
+                    n_new = mask.sum()
+                    if n_new == 0:
+                        total_skipped += len(gids_in)
                         continue
-                    arr = ts_in[grid_id][:]
-                    ts_out.require_dataset(
-                        grid_id,
-                        shape=arr.shape,
-                        dtype=arr.dtype,
-                        chunks=arr.shape,
-                        data=arr,
-                    )
-                    total_copied += 1
+                    ts_out["data"].append(data_in[mask], axis=0)
+                    ts_out["grid_ids"].append(gids_in[mask], axis=0)
+                    if origins_in is not None:
+                        if "patch_origins" in ts_out:
+                            ts_out["patch_origins"].append(origins_in[mask], axis=0)
+                        else:
+                            ts_out.create_dataset("patch_origins", data=origins_in[mask],
+                                                  chunks=(int(n_new), 2))
+                    total_copied += int(n_new)
+                    total_skipped += int((~mask).sum())
 
     zarr.consolidate_metadata(output_path)
     logger.info(

@@ -1,7 +1,8 @@
-import os 
+import os
 from dotenv import load_dotenv
 from eumetsearch import products_list
 from eumetsearch import EUMDownloader, bbox_mtg, init_logging, ZarrExport, get_bbox, BBOX_REGISTRY
+from eumetsearch.data_collection.majortom_export import MajorTomZarrExport
 import argparse
 from datetime import datetime, timedelta
 import calendar
@@ -86,6 +87,69 @@ def main_batched(args, start_date, end_date, n_days=10):
             current = current.replace(year=year + 1, month=1, day=1)
         else:
             current = current.replace(month=month + 1, day=1)
+
+def main_batched_majortom(args, start_date, end_date, label, n_days=1, channels=None):
+    """Batched MajorTOM Zarr export (append-safe).
+
+    For an existing zarr (e.g. June), pass a label that matches the file stem
+    (e.g. ``mtg_june_2025`` → ``mtg_june_2025_majortom.zarr``).  The store is
+    opened with ``mode="a"`` so new timestamps are appended automatically.
+    For a new month, choose a new label and a fresh zarr is created.
+    """
+    logger = init_logging("./logger_mtg_fci.log", verbose=False)
+    load_dotenv()
+
+    if channels is None:
+        channels = ["vis_06", "vis_08"]
+
+    product_id = products_list["MTG-FCI-L1C-FDHSI"]["product_id"]
+    W, S, E, N = get_bbox(args.region)
+    NSWE = [N, S, W, E]
+    logger.info(f"MajorTOM export — label: {label}  region: {args.region}  bbox: {W},{S},{E},{N}")
+
+    downloader = EUMDownloader(
+        product_id=product_id,
+        output_dir="./data/datastore_data",
+        max_parallel_conns=10,
+    )
+
+    start = datetime.fromisoformat(start_date)
+    end   = datetime.fromisoformat(end_date)
+
+    batch_start = start
+    while batch_start <= end:
+        batch_end = min(
+            batch_start + timedelta(days=n_days - 1, hours=23, minutes=59, seconds=59),
+            end,
+        )
+        logger.info(f"Batch {batch_start.date()} → {batch_end.date()}")
+
+        downloader.download_interval(
+            start_time=batch_start.isoformat(),
+            end_time=batch_end.isoformat(),
+            bounding_box=NSWE,
+            observations_per_day=5,
+            jump_minutes=60,
+            start_hour=9,
+        )
+
+        MajorTomZarrExport(
+            args,
+            downloader,
+            label=label,
+            channels=channels,
+        )
+
+        batch_start = batch_end + timedelta(seconds=1)
+
+        try:
+            remove_folder(str(downloader.output_dir / "disk" / "Data" / "zipfolder"))
+            remove_folder(str(downloader.output_dir / "disk" / "Data" / "natfolder"))
+        except Exception as e:
+            logger.error(f"Error removing temp folders: {e}")
+
+    logger.info(f"MajorTOM export finished for label: {label}")
+
 
 @profile
 def main(args, start_date, end_date):
@@ -216,23 +280,25 @@ if __name__ == "__main__":
         logger.info("Using single dask scheduler")
         dask.config.set(scheduler="single-threaded")
 
-    start_date = "2025-08-01T09:00:00"
-    end_date = "2025-08-30T09:00:00"
+    # June 2025 — append to the existing mtg_june_2025_majortom.zarr
+    # July 2025 — create a new mtg_july_2025_majortom.zarr
+    jobs = [
+        ("2025-06-01T09:00:00", "2025-06-30T23:59:59", "mtg_june_2025"),
+        ("2025-07-01T09:00:00", "2025-07-31T23:59:59", "mtg_july_2025"),
+    ]
 
     try:
         monitor_thread = threading.Thread(target=monitor_resources, daemon=True)
         monitor_thread.start()
-        # with cProfile.Profile() as pr:
-        main_batched(args, start_date, end_date, n_days=1)
-        # stats = pstats.Stats(pr)
-        # stats.sort_stats("cumtime").print_stats(20)  # to
+        for start_date, end_date, label in jobs:
+            logger.info(f"Starting MajorTOM export for {label}")
+            main_batched_majortom(args, start_date, end_date, label=label, n_days=1)
     except Exception as e:
         logger.error(f"Error {e}")
         logger.error(traceback.format_exc())
         aggregate_status_jsons(aggregated_json_filename)
         raise
     finally:
-        # Always aggregate at the end — even if no error
         aggregate_status_jsons(aggregated_json_filename)
 
 

@@ -268,16 +268,24 @@ end_dt = datetime.fromisoformat(args.end_date)
 datastore_dir = Path(DATA_PATH) / "datastore_data"
 
 # Build the list of time batches upfront so every tile iterates the same windows.
-_batch_end = start_dt
+# Batch boundaries are aligned to calendar day ends so that download_interval
+# (which works in calendar-day windows) never returns observations that belong
+# to the following batch.
 _time_batches: list[tuple[datetime, datetime]] = []
-while _batch_end <= end_dt:
-    _batch_start = _batch_end
-    _batch_end = min(
-        _batch_start + timedelta(days=args.batch_days),
-        end_dt + timedelta(seconds=1),  # inclusive end
+_d = start_dt.date()
+_end_date = end_dt.date()
+while _d <= _end_date:
+    last_day = min(_d + timedelta(days=args.batch_days - 1), _end_date)
+    batch_start = datetime(_d.year, _d.month, _d.day,
+                           start_dt.hour, start_dt.minute, start_dt.second)
+    if batch_start < start_dt:
+        batch_start = start_dt
+    batch_end = min(
+        end_dt,
+        datetime(last_day.year, last_day.month, last_day.day, 23, 59, 59),
     )
-    _time_batches.append((_batch_start, _batch_end - timedelta(seconds=1)))
-    _batch_end = _batch_end  # already advanced
+    _time_batches.append((batch_start, batch_end))
+    _d = last_day + timedelta(days=1)
 
 logger.info(
     f"Date range split into {len(_time_batches)} batch(es) of up to {args.batch_days} day(s)"
@@ -291,6 +299,20 @@ use_majortom = args.majortom or args.also_majortom
 if use_majortom and args.consolidated_label:
     suffix = "_majortom" if use_majortom else ""
     consolidated_zarr_path = str(datastore_dir / f"{args.consolidated_label}{suffix}.zarr")
+    if os.path.exists(consolidated_zarr_path):
+        if args.yes:
+            shutil.rmtree(consolidated_zarr_path)
+            logger.info(f"Deleted existing zarr (--yes flag): {consolidated_zarr_path}")
+        else:
+            ans = input(
+                f"\nZarr store already exists: {consolidated_zarr_path}\n"
+                "Delete it and start fresh? Existing patches will be lost. [y/N] "
+            ).strip().lower()
+            if ans == "y":
+                shutil.rmtree(consolidated_zarr_path)
+                logger.info(f"Deleted existing zarr: {consolidated_zarr_path}")
+            else:
+                logger.info("Keeping existing zarr — new patches will be appended.")
     logger.info(f"All tiles will write directly into: {consolidated_zarr_path}")
 else:
     consolidated_zarr_path = None
