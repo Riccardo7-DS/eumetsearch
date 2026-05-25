@@ -43,6 +43,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Lightweight install for analysis / alignment only (no download deps).
+# Install with: pip install -e ".[transform]"
+transform = [
+    "numpy>=1.24",
+    "zarr>=2.18",
+    "xarray>=2024.0",
+    "dask>=2024.0",
+    "pyproj>=3.6",
+    "scipy>=1.11",
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "tqdm>=4.0",
+    "matplotlib>=3.7",
+    "geopandas>=1.0",
+    "rioxarray>=0.15",
+]
+
 # Install with: pip install -e ".[majortom]"
 # The majortom package provides the ESA PhiLab MajorTOM global grid.
 # If not installed, the grid is downloaded from HuggingFace Hub automatically.

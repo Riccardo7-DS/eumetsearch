@@ -20,3 +20,9 @@ from .fci_modis_align import (
     latlon_to_fci_fulldisk_rowcol,
     latlon_to_modis_global_rowcol,
 )
+from .ndvi import (
+    compute_ndvi,
+    fci_ndvi_one_timestamp,
+    fci_ndvi_daily_max,
+    modis_ndvi_one_date,
+)

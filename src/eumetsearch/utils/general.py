@@ -310,7 +310,7 @@ def load_zarr_preprocess(path:str, storage_options:dict) -> xr.Dataset:
     ds = ds.assign_coords(time=("time", time_array))
 
     if all(var in ds.data_vars for var in ["vis_06", "vis_08"]):
-        ds = compute_ndvi(ds, "vis_06", "vis_08")
+        ds = ds.assign(ndvi=compute_ndvi(ds["vis_06"], ds["vis_08"]))
         return ds[["vis_06", "vis_08", "ndvi"]]
     else: 
         return ds
@@ -668,9 +668,11 @@ def convert_mtg_fci_with_offsets(ds: xr.Dataset, selected_channels=["vis_06", "v
 
     return ds_out
 
-def compute_ndvi(dataset:xr.Dataset, channel_1:str, channel_2:str) -> xr.Dataset:
-    return dataset.assign(ndvi=(
-        dataset[channel_2] - dataset[channel_1]) / (dataset[channel_2] + dataset[channel_1]))
+def compute_ndvi(red, nir):
+    """NDVI = (NIR - Red) / (NIR + Red). Works on numpy arrays and xarray DataArrays."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return (nir - red) / (nir + red)
 
 
 def clean_outliers(dataset:xr.Dataset, var="ndvi"):

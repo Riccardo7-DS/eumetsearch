@@ -13,7 +13,7 @@ from pyproj import CRS, Transformer
 
 import sys
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).parents[1] / "src" / "eumetsearch" / "transform"))
-from fci_modis_align import (
+from eumetsearch.transform.fci_modis_align import (
     FCIGeometry, MODISGeometry, TargetGrid,
     _aeqd_to_latlon, _latlon_to_fci_px, _latlon_to_modis_px,
     _sample_array, align_patches,
