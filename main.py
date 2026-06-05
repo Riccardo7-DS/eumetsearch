@@ -284,7 +284,7 @@ if __name__ == "__main__":
     # June 2025 — append to the existing mtg_june_2025_majortom.zarr
     # July 2025 — create a new mtg_july_2025_majortom.zarr
     jobs = [
-        ("2025-06-01T10:00:00", "2025-06-30T23:59:59", "mtg_june_2025"),
+        ("2025-07-01T10:00:00", "2025-07-31T23:59:59", "mtg_july_2025"),
     ]
 
     try:
