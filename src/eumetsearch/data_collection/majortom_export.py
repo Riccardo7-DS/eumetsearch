@@ -185,14 +185,19 @@ class MajorTomZarrExport:
                 ts_grp.create_dataset("grid_ids",      data=grid_ids_arr, chunks=n)
                 ts_grp.create_dataset("patch_origins", data=origins_arr,  chunks=(n, 2))
             else:
-                # Append from another tile covering the same timestamp
-                ts_grp["data"].append(data_arr, axis=0)
-                ts_grp["grid_ids"].append(grid_ids_arr, axis=0)
+                # Append only grid_ids not already stored (guards against
+                # double-appending when the same tile is retried after a crash).
+                existing_ids = set(ts_grp["grid_ids"][:].tolist())
+                new_mask = np.array([gid not in existing_ids for gid in all_grid_ids])
+                if not new_mask.any():
+                    return
+                ts_grp["data"].append(data_arr[new_mask], axis=0)
+                ts_grp["grid_ids"].append(grid_ids_arr[new_mask], axis=0)
                 if "patch_origins" in ts_grp:
-                    ts_grp["patch_origins"].append(origins_arr, axis=0)
+                    ts_grp["patch_origins"].append(origins_arr[new_mask], axis=0)
                 else:
                     # Back-fill for stores created before this field was added
-                    ts_grp.create_dataset("patch_origins", data=origins_arr, chunks=(n, 2))
+                    ts_grp.create_dataset("patch_origins", data=origins_arr[new_mask], chunks=(n, 2))
 
     # ------------------------------------------------------------------
     # Scene reading

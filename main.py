@@ -130,7 +130,7 @@ def main_batched_majortom(args, start_date, end_date, label, n_days=1, channels=
             bounding_box=NSWE,
             observations_per_day=5,
             jump_minutes=60,
-            start_hour=9,
+            start_hour=10,
         )
 
         MajorTomZarrExport(
@@ -138,6 +138,7 @@ def main_batched_majortom(args, start_date, end_date, label, n_days=1, channels=
             downloader,
             label=label,
             channels=channels,
+            dtype="float16",
         )
 
         batch_start = batch_end + timedelta(seconds=1)
@@ -283,8 +284,7 @@ if __name__ == "__main__":
     # June 2025 — append to the existing mtg_june_2025_majortom.zarr
     # July 2025 — create a new mtg_july_2025_majortom.zarr
     jobs = [
-        ("2025-06-01T09:00:00", "2025-06-30T23:59:59", "mtg_june_2025"),
-        ("2025-07-01T09:00:00", "2025-07-31T23:59:59", "mtg_july_2025"),
+        ("2025-06-01T10:00:00", "2025-06-30T23:59:59", "mtg_june_2025"),
     ]
 
     try:
