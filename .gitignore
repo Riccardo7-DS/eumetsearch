@@ -1,4 +1,5 @@
 .env
+build/
 notebooks/
 data/
 profile.svg

@@ -32,7 +32,7 @@ def minio_export_zarr(data, bucket_name, store_path):
 
     access_key = os.getenv("EUMETSAT_CONSUMER_KEY")
     access_secret = os.getenv("EUMETSAT_CONSUMER_SECRET")
-    endpoint_url = "https://object-storage.esrin.it.esa.int/"
+    endpoint_url = os.getenv("MINIO_ENDPOINT_URL")
 
     # # Initialize the MinIO client
     # client = Minio(
