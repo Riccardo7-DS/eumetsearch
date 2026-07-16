@@ -57,10 +57,16 @@ FCI_CHANNELS_ALL = FCI_CHANNELS_VIS_NIR + FCI_CHANNELS_IR
 
 FCI_HR_CHANNELS = ["vis_06_hr", "vis_08_hr"]
 
-SEVIRI_CHANNELS_VIS_NIR = ["VIS006", "VIS008", "NIR016"]
-SEVIRI_CHANNELS_IR = ["IR039", "WV062", "WV073", "IR087", "IR097", "IR108", "IR120", "IR134"]
+SEVIRI_CHANNELS_VIS_NIR = ["VIS006", "VIS008", "IR_016"]
+SEVIRI_CHANNELS_IR = ["IR_039", "WV_062", "WV_073", "IR_087", "IR_097", "IR_108", "IR_120", "IR_134"]
 SEVIRI_CHANNELS_ALL = SEVIRI_CHANNELS_VIS_NIR + SEVIRI_CHANNELS_IR
 SEVIRI_CHANNELS_HRV = SEVIRI_CHANNELS_ALL + ["HRV"]
+
+FCI_GII_BANDS = [
+    "k_index", "lifted_index",
+    "prec_water_high", "prec_water_low", "prec_water_mid", "prec_water_total",
+]
+FCI_AMV_BANDS = ["speed", "direction", "pressure", "temperature", "wind_method", "qi"]
 
 products_list = {
     # MTG-I1 FCI Level 1C — Full Disk High Spatial Resolution
@@ -69,7 +75,8 @@ products_list = {
         "product_name": "FCIL1FDHSI",
         "satpy_reader": "fci_l1c_nc",
         "bands": FCI_CHANNELS_ALL,
-        "calibration": "reflectance",
+        "reflectance_bands": FCI_CHANNELS_VIS_NIR,
+        "bt_bands": FCI_CHANNELS_IR,
     },
     # MTG-I1 FCI Level 1C — High Resolution Full Disk
     "MTG-FCI-L1C-HRFI": {
@@ -77,7 +84,8 @@ products_list = {
         "product_name": "FCIL1HRFI",
         "satpy_reader": "fci_l1c_nc",
         "bands": FCI_HR_CHANNELS,
-        "calibration": "reflectance",
+        "reflectance_bands": FCI_HR_CHANNELS,
+        "bt_bands": [],
     },
     # MTG-I1 FCI Level 2 — Cloud Mask
     "MTG-FCI-L2-CLM": {
@@ -85,7 +93,8 @@ products_list = {
         "product_name": "FCIL2CLM",
         "satpy_reader": "fci_l2_nc",
         "bands": ["cloud_state"],
-        "calibration": None,
+        "reflectance_bands": [],
+        "bt_bands": [],
     },
     # MTG-I1 FCI Level 2 — Active Fire Monitoring
     "MTG-FCI-L2-AFM": {
@@ -93,15 +102,41 @@ products_list = {
         "product_name": "FCIL2AFM",
         "satpy_reader": "fci_l2_nc",
         "bands": ["fire_probability"],
-        "calibration": None,
+        "reflectance_bands": [],
+        "bt_bands": [],
     },
     # MTG-I1 FCI Level 2 — Optimal Cloud Analysis
     "MTG-FCI-L2-OCA": {
         "product_id": "EO:EUM:DAT:0668",
         "product_name": "FCIL2OCA",
         "satpy_reader": "fci_l2_nc",
-        "bands": ["cloud_top_pressure", "cloud_optical_thickness"],
-        "calibration": None,
+        # OCA retrieves a two-layer cloud model: there is no unlayered
+        # "cloud_top_pressure" dataset in this reader, only per-layer variants.
+        "bands": [
+            "retrieved_cloud_optical_thickness",
+            "retrieved_cloud_top_pressure_upper_layer",
+            "retrieved_cloud_top_pressure_lower_layer",
+        ],
+        "reflectance_bands": [],
+        "bt_bands": [],
+    },
+    # MTG-I1 FCI Level 2 — Global Instability Indices
+    "MTG-FCI-L2-GII": {
+        "product_id": "EO:EUM:DAT:0683",
+        "product_name": "FCIL2GII",
+        "satpy_reader": "fci_l2_nc",
+        "bands": FCI_GII_BANDS,
+        "reflectance_bands": [],
+        "bt_bands": [],
+    },
+    # MTG-I1 FCI Level 2 — Atmospheric Motion Vectors (netCDF, final AMV output)
+    "MTG-FCI-L2-AMV": {
+        "product_id": "EO:EUM:DAT:0676",
+        "product_name": "FCIL2AMV",
+        "satpy_reader": "fci_l2_nc",
+        "bands": FCI_AMV_BANDS,
+        "reflectance_bands": [],
+        "bt_bands": [],
     },
     # MSG SEVIRI Level 1.5 — Prime (Meteosat-11/12 at 0°E)
     "MSG-SEVIRI-L1-HRY": {
@@ -109,7 +144,8 @@ products_list = {
         "product_name": "HRSEVIRI",
         "satpy_reader": "seviri_l1b_hrit",
         "bands": SEVIRI_CHANNELS_HRV,
-        "calibration": "reflectance",
+        "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR + ["HRV"],
+        "bt_bands": SEVIRI_CHANNELS_IR,
     },
     # MSG SEVIRI Level 1.5 — Indian Ocean Data Coverage (41.5°E)
     "MSG-SEVIRI-L1-IODC": {
@@ -117,15 +153,17 @@ products_list = {
         "product_name": "HRSEVIRI-IODC",
         "satpy_reader": "seviri_l1b_hrit",
         "bands": SEVIRI_CHANNELS_HRV,
-        "calibration": "reflectance",
+        "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR + ["HRV"],
+        "bt_bands": SEVIRI_CHANNELS_IR,
     },
     # MSG SEVIRI Level 1.5 — Rapid Scan Service (3.5°E)
     "MSG-SEVIRI-RSS": {
-        "product_id": "EO:EUM:DAT:MSG:RSS",
-        "product_name": "RSS",
+        "product_id": "EO:EUM:DAT:MSG:MSG15-RSS",
+        "product_name": "MSG15-RSS",
         "satpy_reader": "seviri_l1b_hrit",
         "bands": SEVIRI_CHANNELS_ALL,
-        "calibration": "reflectance",
+        "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR,
+        "bt_bands": SEVIRI_CHANNELS_IR,
     },
 }
 
@@ -173,7 +211,8 @@ class EUMDownloader:
         self.product_name = product_meta["product_name"]
         self.product_id = product_id
         self.satpy_reader = product_meta.get("satpy_reader", "fci_l1c_nc")
-        self.calibration = product_meta.get("calibration", "reflectance")
+        self.reflectance_bands = product_meta.get("reflectance_bands", [])
+        self.bt_bands = product_meta.get("bt_bands", [])
         self.channels = product_meta["bands"]
 
     @staticmethod
@@ -207,20 +246,17 @@ class EUMDownloader:
         return now >= self._token_expiration - timedelta(minutes=buffer_minutes)
 
     def _download_products(self, interval_list, coll_obj, dest_folder, bounding_box):
-        start = interval_list[0]
-        end = interval_list[1]
-        products = coll_obj.search(dtstart=start, dtend=end, bbox=bounding_box)
-        for product in products:
-            with product.open() as fsrc, open(Path(dest_folder) / fsrc.name, mode='wb') as fdst:
-                shutil.copyfileobj(fsrc, fdst)
+        for start, end in interval_list:
+            products = coll_obj.search(dtstart=start, dtend=end, bbox=bounding_box)
+            for product in products:
+                with product.open() as fsrc, open(Path(dest_folder) / fsrc.name, mode='wb') as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
 
-            with zipfile.ZipFile(Path(dest_folder) / fsrc.name, 'r') as zip_ref:
-                for file in zip_ref.namelist():
-                    if file.startswith(str(product)):
-                        zip_ref.extract(file, self.output_dir)
+                with zipfile.ZipFile(Path(dest_folder) / fsrc.name, 'r') as zip_ref:
+                    zip_ref.extractall(self.output_dir)
                 logger.info(f'Unzipping of product {fdst.name} finished.')
 
-        os.remove(Path(dest_folder) / fsrc.name)
+                os.remove(Path(dest_folder) / fsrc.name)
     
     @validate_call
     def _split_time_into_daily_observations(self, 
@@ -348,9 +384,38 @@ class EUMDownloader:
         self._method = method
         self._bounding_box = bounding_box
 
+    def search(self, start_time: str, end_time: str, bounding_box: list = None) -> dict:
+        """Search the collection for matching products without downloading anything.
+
+        Args:
+            start_time, end_time: '%Y-%m-%dT%H:%M:%S' strings (UTC)
+            bounding_box: [N, S, W, E], as expected by eumdac
+
+        Returns:
+            dict with "count" and "products" (list of {"identifier", "date"})
+        """
+        from eumetsearch import assert_datetime_is_timezone_aware, assert_start_precedes_end
+
+        start = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        end = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+        for t in [start, end]:
+            assert_datetime_is_timezone_aware(t)
+        assert_start_precedes_end(start, end)
+
+        products = self._selected_collection.search(dtstart=start, dtend=end, bbox=bounding_box)
+        results = [
+            {
+                "identifier": p._browse_properties.get("identifier"),
+                "date": p._browse_properties.get("date"),
+            }
+            for p in products
+        ]
+        return {"count": len(results), "products": results}
+
     def initiate_download(self, aggregated_file = None):
 
-        if os.path.isfile(aggregated_file):
+        if aggregated_file and os.path.isfile(aggregated_file):
             from eumetsearch import JsonDataResponse
             collected_data = JsonDataResponse(aggregated_file) 
             self.intervals = collected_data.files_exclusion(self.intervals)
@@ -390,10 +455,8 @@ class EUMDownloader:
                         shutil.copyfileobj(fsrc, fdst)
 
                 with zipfile.ZipFile(os.path.join(destination_folder, fsrc.name), 'r') as zip_ref:
-                    for file in zip_ref.namelist():
-                        if file.startswith(str(product)):
-                            zip_ref.extract(file, self.output_dir)
-                    logger.info(f'Unzipping of product {fdst.name} finished.')
+                    zip_ref.extractall(self.output_dir)
+                logger.info(f'Unzipping of product {fdst.name} finished.')
 
                 os.remove(Path(destination_folder) / fsrc.name)
 
@@ -566,7 +629,7 @@ class ZarrExport():
             return
 
         from eumetsearch import compute_auto_chunks
-        from definitions import DATA_PATH
+        from eumetsearch.definitions import DATA_PATH
 
         self.output_dir = downloader.output_dir
         self.size = self._get_size(area_reprojection)
@@ -577,12 +640,19 @@ class ZarrExport():
         self._reprojection = reprojection
         self._threading = args.threading
         self._satpy_reader = getattr(downloader, "satpy_reader", "fci_l1c_nc")
-        self._calibration = getattr(downloader, "calibration", "reflectance")
+        self._reflectance_bands = getattr(downloader, "reflectance_bands", [])
+        self._bt_bands = getattr(downloader, "bt_bands", [])
 
         allowed_channels = (
             FCI_CHANNELS_ALL + FCI_HR_CHANNELS +
             SEVIRI_CHANNELS_HRV +
-            ["cloud_state", "fire_probability", "cloud_top_pressure", "cloud_optical_thickness"]
+            [
+                "cloud_state", "fire_probability",
+                "retrieved_cloud_optical_thickness",
+                "retrieved_cloud_top_pressure_upper_layer",
+                "retrieved_cloud_top_pressure_lower_layer",
+            ] +
+            FCI_GII_BANDS + FCI_AMV_BANDS
         )
         assert all(ch in allowed_channels for ch in channels), \
             f"One or more channels are not recognised. Allowed: {allowed_channels}"
@@ -995,10 +1065,23 @@ class ZarrExport():
 
         files = find_files_and_readers(base_dir=natfolder, reader=self._satpy_reader, missing_ok=True)
         scn = Scene(filenames=files)
-        load_kwargs = {}
-        if self._calibration:
-            load_kwargs["calibration"] = self._calibration
-        scn.load(self.channels, **load_kwargs)
+
+        # Calibration is channel-dependent: VIS/NIR channels must be loaded as
+        # reflectance, while IR/WV channels must be loaded as brightness_temperature.
+        # Loading them together under a single calibration is invalid.
+        reflectance_channels = [c for c in self.channels if c in self._reflectance_bands]
+        bt_channels = [c for c in self.channels if c in self._bt_bands]
+        other_channels = [
+            c for c in self.channels
+            if c not in reflectance_channels and c not in bt_channels
+        ]
+
+        if reflectance_channels:
+            scn.load(reflectance_channels, calibration="reflectance")
+        if bt_channels:
+            scn.load(bt_channels, calibration="brightness_temperature")
+        if other_channels:
+            scn.load(other_channels)
 
         # -------------------------------------------------------------
         # Thread-safe environment for pyproj (no multithreading issues)

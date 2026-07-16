@@ -229,7 +229,7 @@ if __name__ == "__main__":
     import logging
     from functools import partial
     from eumetsearch import handle_exit_signal, aggregate_status_jsons
-    from definitions import DATA_PATH
+    from eumetsearch.definitions import DATA_PATH
     from pathlib import Path
     import signal
     logger = logging.getLogger(__name__)

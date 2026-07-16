@@ -201,7 +201,7 @@ logger.info(f"Generated {len(all_tiles)} tiles ({args.n_lat} × {args.n_lon})")
 # ---------------------------------------------------------------------------
 # Land-fraction filter (with water_min.npy cache)
 # ---------------------------------------------------------------------------
-from definitions import DATA_PATH  # noqa: E402
+from eumetsearch.definitions import DATA_PATH  # noqa: E402
 
 _water_min_path = Path(args.water_min_path) if args.water_min_path else Path(DATA_PATH) / "water_min.npy"
 

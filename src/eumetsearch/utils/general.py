@@ -175,7 +175,7 @@ class JsonDataResponse():
 
 
 def aggregate_status_jsons(AGGREGATED_FILE):
-    from definitions import DATA_PATH
+    from eumetsearch.definitions import DATA_PATH
     """Aggregate all .status.json files into a flat {timestamp_key: status} dictionary."""
     aggregated = {}
 
@@ -275,7 +275,7 @@ def prepare(dataset:Union[xr.DataArray, xr.Dataset]):
 
 
 def extract_mtg_coords():
-    from definitions import ROOT_DIR
+    from eumetsearch.definitions import ROOT_DIR
 
     yaml_path = os.path.join(ROOT_DIR, "src/eumetsearch/utils/areas.yaml")
 

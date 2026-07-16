@@ -33,13 +33,18 @@ from eumetsearch.utils.general import JsonDataResponse
 # products_list structure
 # ---------------------------------------------------------------------------
 
-REQUIRED_PRODUCT_KEYS = {"product_id", "product_name", "satpy_reader", "bands", "calibration"}
+REQUIRED_PRODUCT_KEYS = {
+    "product_id", "product_name", "satpy_reader", "bands",
+    "reflectance_bands", "bt_bands",
+}
 EXPECTED_PRODUCTS = {
     "MTG-FCI-L1C-FDHSI",
     "MTG-FCI-L1C-HRFI",
     "MTG-FCI-L2-CLM",
     "MTG-FCI-L2-AFM",
     "MTG-FCI-L2-OCA",
+    "MTG-FCI-L2-GII",
+    "MTG-FCI-L2-AMV",
     "MSG-SEVIRI-L1-HRY",
     "MSG-SEVIRI-L1-IODC",
     "MSG-SEVIRI-RSS",
@@ -65,14 +70,42 @@ class TestProductsList:
             assert meta["satpy_reader"] in valid_readers, \
                 f"Unknown reader {meta['satpy_reader']!r} for {name}"
 
-    def test_l2_products_have_no_calibration(self):
-        l2_products = {"MTG-FCI-L2-CLM", "MTG-FCI-L2-AFM", "MTG-FCI-L2-OCA"}
+    def test_l2_products_have_no_calibration_bands(self):
+        l2_products = {
+            "MTG-FCI-L2-CLM", "MTG-FCI-L2-AFM", "MTG-FCI-L2-OCA",
+            "MTG-FCI-L2-GII", "MTG-FCI-L2-AMV",
+        }
         for name in l2_products:
-            assert products_list[name]["calibration"] is None
+            assert products_list[name]["reflectance_bands"] == []
+            assert products_list[name]["bt_bands"] == []
 
     def test_fdhsi_bands_include_all_fci_channels(self):
         bands = products_list["MTG-FCI-L1C-FDHSI"]["bands"]
         assert set(FCI_CHANNELS_ALL).issubset(set(bands))
+
+    def test_reflectance_and_bt_bands_partition_l1_bands(self):
+        """VIS/NIR channels must be flagged for reflectance calibration and
+        IR/WV channels for brightness_temperature — never both, never neither."""
+        l1_products = {
+            "MTG-FCI-L1C-FDHSI", "MTG-FCI-L1C-HRFI",
+            "MSG-SEVIRI-L1-HRY", "MSG-SEVIRI-L1-IODC", "MSG-SEVIRI-RSS",
+        }
+        for name in l1_products:
+            meta = products_list[name]
+            reflectance = set(meta["reflectance_bands"])
+            bt = set(meta["bt_bands"])
+            assert not (reflectance & bt), f"{name} has bands in both calibration groups"
+            assert reflectance | bt == set(meta["bands"]), \
+                f"{name} bands not fully covered by reflectance_bands/bt_bands"
+
+    def test_fdhsi_ir_channels_are_bt_not_reflectance(self):
+        meta = products_list["MTG-FCI-L1C-FDHSI"]
+        for ch in FCI_CHANNELS_IR:
+            assert ch in meta["bt_bands"]
+            assert ch not in meta["reflectance_bands"]
+        for ch in FCI_CHANNELS_VIS_NIR:
+            assert ch in meta["reflectance_bands"]
+            assert ch not in meta["bt_bands"]
 
 
 # ---------------------------------------------------------------------------

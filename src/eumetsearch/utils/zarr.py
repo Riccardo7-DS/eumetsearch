@@ -114,15 +114,23 @@ class ZarrStore:
             "vis_04", "vis_05", "vis_06", "vis_08", "vis_09",
             "nir_13", "nir_16", "nir_22",
             "vis_06_hr", "vis_08_hr",
-            "VIS006", "VIS008", "NIR016", "HRV",
+            "VIS006", "VIS008", "IR_016", "HRV",
         }
         _IR_CHANNELS = {
             "ir_38", "wv_63", "wv_73", "ir_87", "ir_97",
             "ir_105", "ir_123", "ir_133",
-            "IR039", "WV062", "WV073", "IR087", "IR097", "IR108", "IR120", "IR134",
+            "IR_039", "WV_062", "WV_073", "IR_087", "IR_097", "IR_108", "IR_120", "IR_134",
         }
         _L2_CHANNELS = {
-            "cloud_state", "fire_probability", "cloud_top_pressure", "cloud_optical_thickness",
+            "cloud_state", "fire_probability",
+            "retrieved_cloud_optical_thickness",
+            "retrieved_cloud_top_pressure_upper_layer",
+            "retrieved_cloud_top_pressure_lower_layer",
+            # GII — Global Instability Indices
+            "k_index", "lifted_index",
+            "prec_water_high", "prec_water_low", "prec_water_mid", "prec_water_total",
+            # AMV — Atmospheric Motion Vectors
+            "speed", "direction", "pressure", "temperature", "wind_method", "qi",
         }
         _ALL_VARS = _VIS_NIR_CHANNELS | _IR_CHANNELS | _L2_CHANNELS
 
@@ -218,7 +226,7 @@ def add_channels_to_zarr(
     _VIS_NIR = {
         "vis_04", "vis_05", "vis_06", "vis_08", "vis_09",
         "nir_13", "nir_16", "nir_22", "vis_06_hr", "vis_08_hr",
-        "VIS006", "VIS008", "NIR016", "HRV",
+        "VIS006", "VIS008", "IR_016", "HRV",
     }
     compressor = zarr.Blosc(cname="zstd", clevel=4)
     z = zarr.open(zarr_path, mode="a")

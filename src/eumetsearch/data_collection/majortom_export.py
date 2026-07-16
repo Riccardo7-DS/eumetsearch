@@ -94,7 +94,8 @@ class MajorTomZarrExport:
         self.max_null_fraction = max_null_fraction
         self.processes = processes
         self._satpy_reader = getattr(downloader, "satpy_reader", "fci_l1c_nc")
-        self._calibration = getattr(downloader, "calibration", "reflectance")
+        self._reflectance_bands = getattr(downloader, "reflectance_bands", [])
+        self._bt_bands = getattr(downloader, "bt_bands", [])
         self._threading = args.threading
         self.dtype = np.dtype(dtype)
 
@@ -121,7 +122,7 @@ class MajorTomZarrExport:
             )
             self._run_from_natfolders(preextracted_natfolders)
         else:
-            from definitions import DATA_PATH
+            from eumetsearch.definitions import DATA_PATH
             downloader.initiate_download(
                 aggregated_file=Path(DATA_PATH) / "datastore_data" / "aggregated_data.json"
             )
@@ -216,10 +217,22 @@ class MajorTomZarrExport:
             base_dir=natfolder, reader=self._satpy_reader, missing_ok=True
         )
         scn = Scene(filenames=files)
-        load_kwargs = {}
-        if self._calibration:
-            load_kwargs["calibration"] = self._calibration
-        scn.load(self.channels, **load_kwargs)
+
+        # Calibration is channel-dependent: VIS/NIR channels must be loaded as
+        # reflectance, while IR/WV channels must be loaded as brightness_temperature.
+        reflectance_channels = [c for c in self.channels if c in self._reflectance_bands]
+        bt_channels = [c for c in self.channels if c in self._bt_bands]
+        other_channels = [
+            c for c in self.channels
+            if c not in reflectance_channels and c not in bt_channels
+        ]
+
+        if reflectance_channels:
+            scn.load(reflectance_channels, calibration="reflectance")
+        if bt_channels:
+            scn.load(bt_channels, calibration="brightness_temperature")
+        if other_channels:
+            scn.load(other_channels)
         return scn
 
     def _scene_timestamp(self, scn) -> str:

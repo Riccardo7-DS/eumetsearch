@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "eumetsearch"
 version = "0.1.0"
@@ -37,7 +41,7 @@ dependencies = [
     "filelock>=3.20.0",
     "pydwca>=0.5.1",
     "eodag>=3.10.0",
-    "huggingface-hub>=1.1.7",
+    "huggingface-hub>=0.24.0",
     "h5py>=3.16.0",
     "earthengine-api>=1.7.26",
 ]
@@ -60,16 +64,18 @@ transform = [
     "rioxarray>=0.15",
 ]
 
-# Install with: pip install -e ".[majortom]"
-# The majortom package provides the ESA PhiLab MajorTOM global grid.
+# The optional ESA PhiLab MajorTOM package (grid definitions) is not published
+# on PyPI, so it can't be declared as a normal or extras dependency here.
+# Install it manually if needed:
+#   pip install "majortom @ git+https://github.com/ESA-PhiLab/Major-TOM.git"
 # If not installed, the grid is downloaded from HuggingFace Hub automatically.
-majortom = [
-    "majortom @ git+https://github.com/ESA-PhiLab/Major-TOM.git",
-]
 
 [dependency-groups]
 dev = [
     "py-spy>=0.4.1",
     "pytest>=8.0.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/eumetsearch"]
 
