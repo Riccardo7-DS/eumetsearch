@@ -263,6 +263,7 @@ def extract_custom_area(area_name:str, file:str):
 
 
 def prepare(dataset:Union[xr.DataArray, xr.Dataset]):
+    import rioxarray  # noqa: F401 - registers the .rio accessor on xr.Dataset/DataArray
     if "longitude" in dataset.dims:
         dataset = dataset.rename({"latitude":"lat", "longitude":"lon"})
     if "x" in dataset.dims:

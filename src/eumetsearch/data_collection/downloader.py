@@ -62,6 +62,26 @@ SEVIRI_CHANNELS_IR = ["IR_039", "WV_062", "WV_073", "IR_087", "IR_097", "IR_108"
 SEVIRI_CHANNELS_ALL = SEVIRI_CHANNELS_VIS_NIR + SEVIRI_CHANNELS_IR
 SEVIRI_CHANNELS_HRV = SEVIRI_CHANNELS_ALL + ["HRV"]
 
+# The DataTailor chain filter for SEVIRI products doesn't accept the satpy
+# reader's band names (e.g. "VIS006") — it uses its own generic band-IDs.
+# Order matches the real SEVIRI channel numbering (1=VIS0.6 ... 11=IR13.4, 12=HRV).
+SEVIRI_CHANNEL_TO_DATATAILOR_ID = {
+    "VIS006": "channel_1",
+    "VIS008": "channel_2",
+    "IR_016": "channel_3",
+    "IR_039": "channel_4",
+    "WV_062": "channel_5",
+    "WV_073": "channel_6",
+    "IR_087": "channel_7",
+    "IR_097": "channel_8",
+    "IR_108": "channel_9",
+    "IR_120": "channel_10",
+    "IR_134": "channel_11",
+    "HRV": "hrv",
+}
+SEVIRI_CHANNELS_ALL_DATATAILOR = [SEVIRI_CHANNEL_TO_DATATAILOR_ID[c] for c in SEVIRI_CHANNELS_ALL]
+SEVIRI_CHANNELS_HRV_DATATAILOR = [SEVIRI_CHANNEL_TO_DATATAILOR_ID[c] for c in SEVIRI_CHANNELS_HRV]
+
 FCI_GII_BANDS = [
     "k_index", "lifted_index",
     "prec_water_high", "prec_water_low", "prec_water_mid", "prec_water_total",
@@ -146,6 +166,7 @@ products_list = {
         "bands": SEVIRI_CHANNELS_HRV,
         "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR + ["HRV"],
         "bt_bands": SEVIRI_CHANNELS_IR,
+        "datatailor_bands": SEVIRI_CHANNELS_HRV_DATATAILOR,
     },
     # MSG SEVIRI Level 1.5 — Indian Ocean Data Coverage (41.5°E)
     "MSG-SEVIRI-L1-IODC": {
@@ -155,6 +176,7 @@ products_list = {
         "bands": SEVIRI_CHANNELS_HRV,
         "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR + ["HRV"],
         "bt_bands": SEVIRI_CHANNELS_IR,
+        "datatailor_bands": SEVIRI_CHANNELS_HRV_DATATAILOR,
     },
     # MSG SEVIRI Level 1.5 — Rapid Scan Service (3.5°E)
     "MSG-SEVIRI-RSS": {
@@ -164,6 +186,7 @@ products_list = {
         "bands": SEVIRI_CHANNELS_ALL,
         "reflectance_bands": SEVIRI_CHANNELS_VIS_NIR,
         "bt_bands": SEVIRI_CHANNELS_IR,
+        "datatailor_bands": SEVIRI_CHANNELS_ALL_DATATAILOR,
     },
 }
 
@@ -214,6 +237,10 @@ class EUMDownloader:
         self.reflectance_bands = product_meta.get("reflectance_bands", [])
         self.bt_bands = product_meta.get("bt_bands", [])
         self.channels = product_meta["bands"]
+        # DataTailor chains for some products (e.g. SEVIRI) use band-IDs that
+        # differ from the satpy reader's band names; fall back to `bands` when
+        # no override is needed (e.g. FCI/AFM, where the names already match).
+        self.datatailor_channels = product_meta.get("datatailor_bands", self.channels)
 
     @staticmethod
     def len(product_ids: SearchResults) -> int:
@@ -413,6 +440,50 @@ class EUMDownloader:
         ]
         return {"count": len(results), "products": results}
 
+    def download_single(self,
+                         start_time: str,
+                         end_time: str,
+                         bounding_box: list = None,
+                         method: Literal["datatailor", "datastore"] = "datatailor"):
+        """Download the product(s) matching a single time window and bounding box.
+
+        Unlike `download_interval` + `initiate_download`, this skips the
+        daily-interval splitting and thread-chunking machinery meant for
+        multi-day batch jobs, and downloads exactly one time window in one
+        shot — useful for one-off, event-based downloads.
+
+        Args:
+            start_time, end_time: '%Y-%m-%dT%H:%M:%S' strings (UTC)
+            bounding_box: [N, S, W, E]
+            method: "datatailor" or "datastore"
+
+        Returns:
+            list of matched products (also stored as self.file_list)
+        """
+        from eumetsearch import assert_datetime_is_timezone_aware, assert_start_precedes_end
+
+        logger.info(f"Downloading {self.product_id} from {start_time} to {end_time}...")
+
+        start = datetime.strptime(start_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        end = datetime.strptime(end_time, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+
+        for t in [start, end]:
+            assert_datetime_is_timezone_aware(t)
+        assert_start_precedes_end(start, end)
+
+        self.intervals = [(start, end)]
+        self.start_date = start_time
+        self.end_date = end_time
+        self._method = method
+        self._bounding_box = bounding_box
+
+        self.initiate_download()
+
+        if not self.file_list:
+            logger.warning(f"No products found between {start_time} and {end_time} for bbox {bounding_box}")
+
+        return self.file_list
+
     def initiate_download(self, aggregated_file = None):
 
         if aggregated_file and os.path.isfile(aggregated_file):
@@ -478,7 +549,7 @@ class EUMDownloader:
             product=self.product_name,
             format=self.format,
             roi=RegionOfInterest(NSWE = bounding_box),
-            filter={"bands" : self.channels},
+            filter={"bands" : self.datatailor_channels},
             projection='geographic',
         )
 

@@ -27,23 +27,12 @@ dependencies = [
     "ipykernel>=6.30.0",
     "h5netcdf>=1.6.3",
     "pyproj (>=3.7.2,<4.0.0)",
-    "memory-profiler>=0.61.0",
-    "minio>=7.2.18",
     "s3fs>=2025.9.0",
-    "pyarrow>=22.0.0",
-    "fastparquet>=2024.11.0",
     "geopandas>=1.1.1",
     "rioxarray>=0.19.0",
-    "phidown>=0.1.22",
-    "folium>=0.20.0",
-    "pystac>=1.14.1",
-    "pystac-client>=0.9.0",
     "filelock>=3.20.0",
-    "pydwca>=0.5.1",
-    "eodag>=3.10.0",
     "huggingface-hub>=0.24.0",
     "h5py>=3.16.0",
-    "earthengine-api>=1.7.26",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +51,19 @@ transform = [
     "matplotlib>=3.7",
     "geopandas>=1.0",
     "rioxarray>=0.15",
+]
+
+# Optional Google Earth Engine land-fraction tile filtering
+# (used by data_collection/pipeline_data.py when --min_land_fraction > 0).
+gee = [
+    "earthengine-api>=1.7.26",
+]
+
+# Optional Copernicus Data Space search helper
+# (used by data_collection/phidown_data.py).
+phidown = [
+    "phidown>=0.1.22",
+    "shapely>=2.0",
 ]
 
 # The optional ESA PhiLab MajorTOM package (grid definitions) is not published
