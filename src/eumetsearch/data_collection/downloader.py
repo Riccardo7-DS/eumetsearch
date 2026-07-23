@@ -109,7 +109,7 @@ products_list = {
     },
     # MTG-I1 FCI Level 2 — Cloud Mask
     "MTG-FCI-L2-CLM": {
-        "product_id": "EO:EUM:DAT:0666",
+        "product_id": "EO:EUM:DAT:0678",
         "product_name": "FCIL2CLM",
         "satpy_reader": "fci_l2_nc",
         "bands": ["cloud_state"],
@@ -118,8 +118,8 @@ products_list = {
     },
     # MTG-I1 FCI Level 2 — Active Fire Monitoring
     "MTG-FCI-L2-AFM": {
-        "product_id": "EO:EUM:DAT:0733",
-        "product_name": "FCIL2AFM",
+        "product_id": "EO:EUM:DAT:0801",
+        "product_name": "MTGFIRN",
         "satpy_reader": "fci_l2_nc",
         "bands": ["fire_probability"],
         "reflectance_bands": [],

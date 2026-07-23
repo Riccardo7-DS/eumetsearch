@@ -1,6 +1,6 @@
 .env
 build/
-notebooks/
+notebook/
 data/
 profile.svg
 *.log
