@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "eumetsearch"
-version = "0.1.1"
+version = "0.1.2"
 description = "Package to download MTG FCI / MSG SEVIRI data and export to regular-grid or MajorTOM sparse Zarr"
 authors = [
   { name = "Riccardo D’Ercole" }
