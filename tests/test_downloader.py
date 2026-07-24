@@ -5,8 +5,10 @@ Tests for eumetsearch.data_collection.downloader:
   JsonDataResponse.files_exclusion
 """
 
+import io
 import json
 import types
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -146,6 +148,85 @@ class TestGetProductMetadata:
     def test_does_not_require_an_instance(self):
         # Static method: callable on the class itself, no auth/network needed.
         assert isinstance(EUMDownloader.__dict__["get_product_metadata"], staticmethod)
+
+
+# ---------------------------------------------------------------------------
+# EUMDownloader._download_customisation
+# ---------------------------------------------------------------------------
+
+class _FakeStream:
+    """Minimal file-like object mimicking eumdac's stream_output result.
+
+    Real eumdac sets `.name` to a bare filename (no directory component) —
+    see eumdac.customisation.Customisation._download_response, which does
+    `response.raw.name = output.split("/")[-1]`.
+    """
+    def __init__(self, data: bytes, name: str):
+        self._buf = io.BytesIO(data)
+        self.name = name
+
+    def read(self, *args, **kwargs):
+        return self._buf.read(*args, **kwargs)
+
+
+class _FakeCustomisation:
+    def __init__(self, data: bytes, output_name: str = "output.nc"):
+        self._id = "fake-id"
+        self.status = "DONE"
+        self.outputs = [output_name]
+        self._data = data
+        self.deleted = False
+
+    @contextmanager
+    def stream_output(self, name):
+        yield _FakeStream(self._data, name)
+
+    def delete(self):
+        self.deleted = True
+
+
+class _FakeDataTailor:
+    def __init__(self, customisation):
+        self._customisation = customisation
+
+    def new_customisation(self, product, chain):
+        return self._customisation
+
+
+def _make_downloader_shell(customisation):
+    """Return an EUMDownloader instance bypassing __init__, wired to a fake DataTailor."""
+    obj = object.__new__(EUMDownloader)
+    obj._data_tailor = _FakeDataTailor(customisation)
+    obj.SLEEP_TIME = 0
+    return obj
+
+
+class TestDownloadCustomisation:
+    def test_writes_file_into_dest_path_not_cwd(self, tmp_path, monkeypatch):
+        # cwd is deliberately NOT dest_path, to catch cwd-relative writes.
+        other_cwd = tmp_path / "not_the_dest"
+        other_cwd.mkdir()
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        content = b"fake-netcdf-bytes"
+        customisation = _FakeCustomisation(content, output_name="product.nc")
+        downloader = _make_downloader_shell(customisation)
+
+        downloader._download_customisation(product="dummy", chain="dummy-chain", dest_path=str(dest))
+
+        assert (dest / "product.nc").read_bytes() == content
+        assert not (other_cwd / "product.nc").exists()
+
+    def test_deletes_customisation_after_download(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        customisation = _FakeCustomisation(b"data")
+        downloader = _make_downloader_shell(customisation)
+
+        downloader._download_customisation(product="dummy", chain="dummy-chain", dest_path=str(tmp_path))
+
+        assert customisation.deleted is True
 
 
 # ---------------------------------------------------------------------------

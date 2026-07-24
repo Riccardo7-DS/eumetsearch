@@ -614,7 +614,10 @@ class EUMDownloader:
                     # Safely get the first matching output file
                     cust_file = next(f for f in customisation.outputs if fnmatch.fnmatch(f, '*'))
 
-                    with customisation.stream_output(cust_file) as stream, open(stream.name, mode='wb') as fdst:
+                    # eumdac's stream.name is a bare filename (no directory), so it
+                    # must be explicitly joined with dest_path rather than opened as-is.
+                    with customisation.stream_output(cust_file) as stream, \
+                            open(os.path.join(dest_path, stream.name), mode='wb') as fdst:
                         shutil.copyfileobj(stream, fdst)
 
                     logger.info(f"Download finished for customisation {customisation._id}.")
@@ -636,11 +639,6 @@ class EUMDownloader:
                 logger.info(f"Customisation {customisation._id} is running.")
 
             time.sleep(self.SLEEP_TIME)
-
-            for product in customisation.outputs:
-                with customisation.stream_output(product) as source_file, open(os.path.join(dest_path, source_file.name), 'wb') as destination_file:
-                    shutil.copyfileobj(source_file, destination_file)
-                logger.info(f"Product {product} downloaded successfully.")
 
         customisation.delete()
 
