@@ -227,10 +227,7 @@ class EUMDownloader:
         self._data_tailor = self.initialize_datatailor(self._token)
         self._selected_collection = self._data_store.get_collection(product_id)
 
-        product_key = next((k for k, v in products_list.items() if v["product_id"] == product_id), None)
-        if product_key is None:
-            raise ValueError(f"Product ID '{product_id}' not found in products_list")
-        product_meta = products_list[product_key]
+        product_meta = self.get_product_metadata(product_id)
         self.product_name = product_meta["product_name"]
         self.product_id = product_id
         self.satpy_reader = product_meta.get("satpy_reader", "fci_l1c_nc")
@@ -246,6 +243,25 @@ class EUMDownloader:
     def len(product_ids: SearchResults) -> int:
         """Return the number of product IDs."""
         return product_ids.total_results
+
+    @staticmethod
+    def get_product_metadata(product_id: str) -> dict:
+        """Look up a `products_list` entry by its EUMETSAT product code.
+
+        Lets you query by code (e.g. "EO:EUM:DAT:0668") instead of the
+        dictionary key name (e.g. "MTG-FCI-L2-OCA"). Doesn't require an
+        authenticated instance.
+
+        Args:
+            product_id: EUMETSAT product code.
+
+        Returns:
+            The matching products_list entry (product_name, bands, etc.)
+        """
+        product_key = next((k for k, v in products_list.items() if v["product_id"] == product_id), None)
+        if product_key is None:
+            raise ValueError(f"Product ID '{product_id}' not found in products_list")
+        return products_list[product_key]
         
     def initialize_datastore(self, token):
         datastore = eumdac.DataStore(token)

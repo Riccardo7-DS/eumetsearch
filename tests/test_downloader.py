@@ -23,6 +23,7 @@ from eumetsearch.data_collection.downloader import (
     SEVIRI_CHANNELS_ALL,
     SEVIRI_CHANNELS_HRV,
     SEVIRI_CHANNELS_VIS_NIR,
+    EUMDownloader,
     ZarrExport,
     products_list,
 )
@@ -37,6 +38,9 @@ REQUIRED_PRODUCT_KEYS = {
     "product_id", "product_name", "satpy_reader", "bands",
     "reflectance_bands", "bt_bands",
 }
+# Only present on products whose DataTailor chain band-IDs differ from the
+# satpy reader's band names (currently the SEVIRI products).
+OPTIONAL_PRODUCT_KEYS = {"datatailor_bands"}
 EXPECTED_PRODUCTS = {
     "MTG-FCI-L1C-FDHSI",
     "MTG-FCI-L1C-HRFI",
@@ -57,7 +61,19 @@ class TestProductsList:
 
     def test_each_product_has_required_keys(self):
         for name, meta in products_list.items():
-            assert REQUIRED_PRODUCT_KEYS == set(meta.keys()), f"Missing keys in {name}"
+            keys = set(meta.keys())
+            assert REQUIRED_PRODUCT_KEYS <= keys, f"Missing keys in {name}"
+            assert keys - REQUIRED_PRODUCT_KEYS <= OPTIONAL_PRODUCT_KEYS, \
+                f"Unexpected keys in {name}: {keys - REQUIRED_PRODUCT_KEYS - OPTIONAL_PRODUCT_KEYS}"
+
+    def test_datatailor_bands_only_on_seviri_products(self):
+        seviri_products = {"MSG-SEVIRI-L1-HRY", "MSG-SEVIRI-L1-IODC", "MSG-SEVIRI-RSS"}
+        for name, meta in products_list.items():
+            if name in seviri_products:
+                assert "datatailor_bands" in meta
+                assert len(meta["datatailor_bands"]) == len(meta["bands"])
+            else:
+                assert "datatailor_bands" not in meta
 
     def test_product_ids_are_nonempty_strings(self):
         for name, meta in products_list.items():
@@ -106,6 +122,30 @@ class TestProductsList:
         for ch in FCI_CHANNELS_VIS_NIR:
             assert ch in meta["reflectance_bands"]
             assert ch not in meta["bt_bands"]
+
+
+# ---------------------------------------------------------------------------
+# EUMDownloader.get_product_metadata
+# ---------------------------------------------------------------------------
+
+class TestGetProductMetadata:
+    def test_looks_up_by_product_code(self):
+        meta = EUMDownloader.get_product_metadata("EO:EUM:DAT:0668")
+        assert meta is products_list["MTG-FCI-L2-OCA"]
+        assert meta["product_name"] == "FCIL2OCA"
+
+    def test_works_for_every_known_product_id(self):
+        for name, meta in products_list.items():
+            assert EUMDownloader.get_product_metadata(meta["product_id"]) is meta, \
+                f"Lookup mismatch for {name}"
+
+    def test_unknown_code_raises_value_error(self):
+        with pytest.raises(ValueError, match="NOT_A_REAL_CODE"):
+            EUMDownloader.get_product_metadata("NOT_A_REAL_CODE")
+
+    def test_does_not_require_an_instance(self):
+        # Static method: callable on the class itself, no auth/network needed.
+        assert isinstance(EUMDownloader.__dict__["get_product_metadata"], staticmethod)
 
 
 # ---------------------------------------------------------------------------
